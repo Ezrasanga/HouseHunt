@@ -6,6 +6,7 @@ import PropertyGrid from "../components/property/PropertyGrid";
 import PropertyGallery from "../components/property/PropertyGallery";
 import PropertyDetails from "../components/property/PropertyDetails";
 import PropertyActions from "../components/property/PropertyActions";
+import { login as loginApi, register as registerApi } from "../services/authService";
 import "../styles/app.css";
 
 // ── MODERATION ────────────────────────────────────────────────────────────────
@@ -135,47 +136,90 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
   const taken = props.filter(p=>p.status==="taken");
 
   // AUTH
-  const doLogin = role => {
+  const doLogin = async role => {
     setAuthErr("");
-    if(role==="admin"){
-      if(authF.email===ADMIN_CREDS.user && authF.password===ADMIN_CREDS.pass){
-        setUser({role:"admin",data:{name:"Administrator"}});
-        setAuthModal(null); setTab("admin");
-        msg("Welcome, Administrator! 👋","ok");
-      } else setAuthErr("Invalid admin credentials.");
+    if (role === "admin") {
+      if (authF.email === ADMIN_CREDS.user && authF.password === ADMIN_CREDS.pass) {
+        setUser({ role: "admin", data: { name: "Administrator" } });
+        setAuthModal(null);
+        setTab("admin");
+        msg("Welcome, Administrator! 👋", "ok");
+      } else {
+        setAuthErr("Invalid admin credentials.");
+      }
       return;
     }
-    const list = role==="landlord" ? landlords : tenants;
-    const u = list.find(x=>x.email===authF.email && x.password===authF.password);
-    if(!u){ setAuthErr("Invalid email or password."); return; }
-    if(u.banned){ setAuthErr("This account is suspended. Contact support."); return; }
-    setUser({role, data:{...u}});
-    setAuthModal(null);
-    setTab(role==="landlord"?"landlord":"tenant");
-    msg(`Welcome back, ${u.name.split(" ")[0]}!`,"ok");
-    addLog("User login", `${u.name} (${role})`, "info");
+
+    if (!authF.email || !authF.password) {
+      setAuthErr("Email and password are required.");
+      return;
+    }
+
+    try {
+      const payload = { email: authF.email, password: authF.password, role };
+      const { data } = await loginApi(payload);
+
+      if (!data.success) {
+        throw new Error(data.message || "Login failed.");
+      }
+
+      const nextUser = { role: data.user.role, data: data.user };
+      setUser(nextUser);
+      window.localStorage.setItem("househunt-user", JSON.stringify(nextUser));
+      window.localStorage.setItem("token", data.token);
+      setAuthModal(null);
+      setTab(role === "landlord" ? "landlord" : "tenant");
+      msg(`Welcome back, ${data.user.name.split(" ")[0]}!`, "ok");
+      addLog("User login", `${data.user.name} (${role})`, "info");
+    } catch (err) {
+      setAuthErr(err.response?.data?.message ?? err.message ?? "Login failed.");
+    }
   };
 
-  const doRegister = role => {
+  const doRegister = async role => {
     setAuthErr("");
-    if(!authF.name||!authF.email||!authF.password){ setAuthErr("All fields are required."); return; }
-    if(dirty(authF.name)){ setAuthErr("Name contains inappropriate content."); return; }
-    const list = role==="landlord" ? landlords : tenants;
-    if(list.find(u=>u.email===authF.email)){ setAuthErr("Email already registered."); return; }
-    if(role==="landlord"){
-      const nl={id:"L"+Date.now(),name:authF.name,email:authF.email,password:authF.password,phone:"",whatsapp:"",ig:"",fb:"",tt:"",tw:"",banned:false,joined:todayStr()};
-      setLandlords(l=>[...l,nl]);
-      setUser({role:"landlord",data:nl});
-      addLog("Landlord registered", authF.name, "success");
-    } else {
-      const nt={id:"T"+Date.now(),name:authF.name,email:authF.email,password:authF.password,unlocked:[],banned:false,joined:todayStr()};
-      setTenants(t=>[...t,nt]);
-      setUser({role:"tenant",data:nt});
-      addLog("Tenant registered", authF.name, "success");
+    if (!authF.name || !authF.email || !authF.password) {
+      setAuthErr("All fields are required.");
+      return;
     }
-    setAuthModal(null);
-    setTab(role==="landlord"?"landlord":"tenant");
-    msg("Account created! Welcome 🎉","ok");
+    if (dirty(authF.name)) {
+      setAuthErr("Name contains inappropriate content.");
+      return;
+    }
+
+    try {
+      const payload = {
+        name: authF.name,
+        email: authF.email,
+        password: authF.password,
+        role: role === "landlord" ? "landlord" : "tenant",
+      };
+
+      const { data } = await registerApi(payload);
+
+      if (!data.success) {
+        throw new Error(data.message || "Registration failed.");
+      }
+
+      const nextUser = { role: data.user.role, data: data.user };
+      setUser(nextUser);
+      window.localStorage.setItem("househunt-user", JSON.stringify(nextUser));
+      window.localStorage.setItem("token", data.token);
+
+      if (role === "landlord") {
+        setLandlords(l => [...l, data.user]);
+        addLog("Landlord registered", data.user.name, "success");
+      } else {
+        setTenants(t => [...t, data.user]);
+        addLog("Tenant registered", data.user.name, "success");
+      }
+
+      setAuthModal(null);
+      setTab(role === "landlord" ? "landlord" : "tenant");
+      msg("Account created! Welcome 🎉", "ok");
+    } catch (err) {
+      setAuthErr(err.response?.data?.message ?? err.message ?? "Registration failed.");
+    }
   };
 
   const logout = () => { setUser(null); setTab("home"); msg("Signed out.","info"); };
