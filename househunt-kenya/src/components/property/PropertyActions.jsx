@@ -1,4 +1,4 @@
-export default function PropertyActions({ canManage, liveProp, markTaken, adminVerify, flagProp, approveProp, setSelProp, deleteProp, user }) {
+export default function PropertyActions({ canManage, liveProp, markTaken, adminVerify, flagProp, approveProp, setSelProp, user }) {
   if (!canManage) return null;
 
   return (

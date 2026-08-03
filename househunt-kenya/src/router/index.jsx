@@ -1,1 +1,1 @@
-export default function Router() { return null; }
+export { default } from "./AppRouter";
