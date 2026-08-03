@@ -1,4 +1,12 @@
 import { useState, useRef } from "react";
+import Navbar from "./components/layout/Navbar";
+import Hero from "./components/layout/Hero";
+import SearchBar from "./components/layout/SearchBar";
+import PropertyGrid from "./components/property/PropertyGrid";
+import PropertyGallery from "./components/property/PropertyGallery";
+import PropertyDetails from "./components/property/PropertyDetails";
+import PropertyActions from "./components/property/PropertyActions";
+import "./styles/app.css";
 
 // ── MODERATION ────────────────────────────────────────────────────────────────
 const BANNED = ["porn","pornography","xxx","nude","naked","pussy","dick","cock","fuck","shit","bitch","whore","slut","nigger","faggot","bastard","cunt","retard","escort","prostitute","hooker","cocaine","heroin","kill yourself","kys","insult","stupid idiot"];
@@ -44,38 +52,7 @@ const SEED_LOG = [
 
 
 // ── PROP CARD COMPONENT ───────────────────────────────────────────────────────
-function PropCard({ p, onView, user, onDel }) {
-  const canDel = user?.role==="admin" || (user?.role==="landlord" && p.landlordId===user.data.id);
-  const cover = p.media?.find(m=>m.type==="image");
-  return (
-    <div className={`pcard${p.boosted?" boosted":""}${p.status==="taken"?" taken":""}${p.flagged?" flagged":""}`}>
-      {p.boosted && <div className="crown">⭐ Featured Listing</div>}
-      <div className="pthumb" onClick={()=>onView(p)}>
-        <div className="pthumb-bg" style={{background:`linear-gradient(135deg,${p.color}cc,${p.color}77)`}}/>
-        {cover && <img src={cover.url} alt={p.title}/>}
-        {cover && <div className="pthumb-ov"/>}
-        <span className="pinit">{p.initials}</span>
-        <div className="ptyp">{p.type}</div>
-        {p.status==="taken" && <div className="ptaken">⊘ Taken</div>}
-        {p.flagged && <div className="pflag">🚩 Flagged</div>}
-        {p.media?.length>0 && <div className="pmcnt">📷 {p.media.length}</div>}
-      </div>
-      <div className="pbody">
-        <div className="ptitle">{p.title}</div>
-        <div className="ploc">📍 {p.location}</div>
-        <div className="pmeta">
-          <div className="prent">{KES(p.rent)}<sub>/mo</sub></div>
-          <div className="prooms">{p.rooms}</div>
-        </div>
-        <div className="tags">{p.tags.slice(0,3).map(t=><span key={t} className="tag">{t}</span>)}</div>
-        <div className="pfoot">
-          <button className="pvbtn" onClick={()=>onView(p)}>View Details →</button>
-          {canDel && <button className="pdbtn" onClick={e=>{e.stopPropagation();onDel(p.id);}}>🗑</button>}
-        </div>
-      </div>
-    </div>
-  );
-}
+
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 export default function App() {
@@ -310,32 +287,8 @@ export default function App() {
   // ── RENDER ──────────────────────────────────────────────────────────────────
   return (
     <div>
-      <style>{CSS}</style>
-
       {/* HEADER */}
-      <header className="hdr">
-        <div className="logo" onClick={()=>setTab("home")}>House<em>Hunt</em> Kenya</div>
-        <nav className="hnav">
-          {[["home","🏠 Home"],["tenant","Find a Home"],["landlord","For Landlords"],["guide","How It Works"]].map(([t,l])=>(
-            <button key={t} className={`nb${tab===t?" on":""}`}
-              onClick={()=>{if((t==="landlord"||t==="tenant")&&!user){setAuthModal(t);}else setTab(t);}}>
-              {l}
-            </button>
-          ))}
-          {user?.role==="admin" && <button className={`nb adm${tab==="admin"?" on":""}`} onClick={()=>setTab("admin")}>⚙️ Admin</button>}
-        </nav>
-        {user
-          ? <div className="userpill">
-              <div className={`uav${user.role==="admin"?" adm":""}`}>{user.role==="admin"?"A":user.data.name[0]}</div>
-              <span>{user.role==="admin"?"Administrator":user.data.name.split(" ")[0]}</span>
-              <button className="sout" onClick={logout}>Sign out</button>
-            </div>
-          : <div style={{display:"flex",gap:5}}>
-              <button className="bghost" style={{fontSize:"0.74rem",padding:"5px 12px"}} onClick={()=>setAuthModal("tenant")}>Tenant Login</button>
-              <button className="bp" style={{fontSize:"0.74rem",padding:"5px 12px"}} onClick={()=>setAuthModal("landlord")}>Landlord Login</button>
-            </div>
-        }
-      </header>
+      <Navbar tab={tab} setTab={setTab} user={user} logout={logout} setAuthModal={setAuthModal} />
 
       {/* ANN BAR */}
       {activeAnns.length>0 && tab!=="admin" && (
@@ -350,19 +303,7 @@ export default function App() {
 
       {/* ─── HOME ─── */}
       {tab==="home" && <>
-        <div className="hero">
-          <div className="hero-in">
-            <div className="htag">🏡 Kenya's Premier Property Platform</div>
-            <h1 className="h1">Find Your <em>Perfect Home</em><br/>Across Kenya</h1>
-            <p className="hsub">Verified listings across Nairobi, Mombasa, Kisumu & beyond. Connect directly with landlords.</p>
-            <div className="hbtns">
-              <button className="bp" onClick={()=>user?.role==="tenant"?setTab("tenant"):setAuthModal("tenant")}>Browse Listings →</button>
-              <button className="bo" onClick={()=>user?.role==="landlord"?setTab("landlord"):setAuthModal("landlord")}>List Your Property</button>
-              {!user && <button className="bo" style={{borderColor:"rgba(196,153,26,0.4)",color:"#C4991A"}} onClick={()=>setAuthModal("admin")}>Admin Login</button>}
-            </div>
-            <p className="hnote">✓ Free to browse · ✓ Free to list · 🔓 Unlock contacts KSh {settings.unlockFee}</p>
-          </div>
-        </div>
+        <Hero user={user} setTab={setTab} setAuthModal={setAuthModal} unlockFee={settings.unlockFee} />
         <div className="statsbar">
           <div className="stitem"><span className="stnum">{props.filter(p=>p.approved!==false).length}+</span><span className="stlbl">Listings</span></div>
           <div className="stitem"><span className="stnum">{props.filter(p=>p.status==="available"&&p.approved!==false).length}</span><span className="stlbl">Available</span></div>
@@ -371,9 +312,12 @@ export default function App() {
         </div>
         <div className="page">
           <div className="sh"><div className="shey">Featured & Boosted</div><div className="shtt">Top Listings This Week</div></div>
-          <div className="pgrid">
-            {sorted.filter(p=>p.boosted).slice(0,3).map(p=><PropCard key={p.id} p={p} onView={p=>{setSelProp(p);setMidx(0);}} user={user} onDel={deleteProp}/>)}
-          </div>
+          <PropertyGrid
+            properties={sorted.filter(p=>p.boosted).slice(0,3)}
+            onView={property=>{setSelProp(property);setMidx(0);}}
+            user={user}
+            onDel={deleteProp}
+          />
         </div>
       </>}
 
@@ -382,22 +326,15 @@ export default function App() {
         <div className="page">
           {!user && <div className="guestbanner"><p><strong>🔒 Guest mode.</strong> Contacts & locations are hidden. Login free to browse.</p><button className="bp" style={{fontSize:"0.78rem",padding:"7px 16px"}} onClick={()=>setAuthModal("tenant")}>Login / Sign Up Free</button></div>}
           <div className="sh"><div className="shey">Browse listings</div><div className="shtt">Find Your Home</div></div>
-          <div className="sbar">
-            <input placeholder="🔍 Search location or name…" value={search} onChange={e=>setSearch(e.target.value)}/>
-            <select value={budget} onChange={e=>setBudget(e.target.value)}>
-              <option value="">Any Budget</option>
-              <option value="low">Below KSh 15,000</option>
-              <option value="mid">KSh 15,000 – 35,000</option>
-              <option value="high">Above KSh 35,000</option>
-            </select>
-            <select value={ptype} onChange={e=>setPtype(e.target.value)}>
-              <option value="">Any Type</option>
-              {["Bedsitter","Room","Apartment","House","Penthouse"].map(t=><option key={t}>{t}</option>)}
-            </select>
-          </div>
+          <SearchBar search={search} setSearch={setSearch} budget={budget} setBudget={setBudget} ptype={ptype} setPtype={setPtype} />
           {filtered.length===0
             ? <div className="noresult"><h3>No listings found</h3><p>Try adjusting your filters.</p></div>
-            : <div className="pgrid">{filtered.map(p=><PropCard key={p.id} p={p} onView={p=>{setSelProp(p);setMidx(0);}} user={user} onDel={deleteProp}/>)}</div>}
+            : <PropertyGrid
+                properties={filtered}
+                onView={property=>{setSelProp(property);setMidx(0);}}
+                user={user}
+                onDel={deleteProp}
+              />}
         </div>
       )}
 
@@ -854,91 +791,29 @@ export default function App() {
               {canManage && <button className="bdel" style={{position:"absolute",top:12,left:12,zIndex:10}} onClick={()=>deleteProp(liveProp.id)}>🗑 Delete</button>}
               <button className="mclose" onClick={()=>setSelProp(null)}>✕</button>
             </div>
-            {liveProp.media?.length>1 && <div className="thumbrow">{liveProp.media.map((m,i)=>(
-              <div key={i} className={`thumb${midx===i?" on":""}`} onClick={()=>setMidx(i)}>
-                {m.type==="image"?<img src={m.url} alt=""/>:<video src={m.url} muted/>}
-              </div>
-            ))}</div>}
-            <div className="mbody">
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}}>
-                <span style={{fontSize:"0.66rem",color:"var(--rust)",textTransform:"uppercase",letterSpacing:"1px",fontWeight:700}}>{liveProp.type}</span>
-                <span className={`sbadge sb-${liveProp.status==="available"?"av":"tk"}`}>{liveProp.status==="available"?"✓ Available":"⊘ Taken"}</span>
-                {liveProp.boosted && <span style={{fontSize:"0.66rem",color:"#C4991A",fontWeight:700}}>⭐ Boosted</span>}
-                {liveProp.flagged && <span style={{fontSize:"0.66rem",color:"#dc2626",fontWeight:700}}>🚩 Flagged</span>}
-              </div>
-              <h2>{liveProp.title}</h2>
-              {(user?.role!=="tenant"||isUnlocked(liveProp.id))
-                ?<p style={{color:"#7C3A1E",fontSize:"0.82rem",marginTop:4}}>📍 {liveProp.location}</p>
-                :<p style={{color:"#bbb",fontSize:"0.82rem",marginTop:4}}>📍 Location hidden — unlock to view</p>}
-              <div className="mdets">
-                <div className="mdet"><div className="mdet-l">Monthly Rent</div><div className="mdet-v" style={{color:"var(--rust)"}}>{KES(liveProp.rent)}</div></div>
-                <div className="mdet"><div className="mdet-l">Rooms</div><div className="mdet-v">{liveProp.rooms}</div></div>
-                <div className="mdet"><div className="mdet-l">Media</div><div className="mdet-v">{liveProp.media?.length||0} files</div></div>
-              </div>
-              <div className="tags" style={{marginBottom:"1rem"}}>{liveProp.tags.map(t=><span key={t} className="tag">{t}</span>)}</div>
-              <div className="mrules"><strong>House Rules</strong>{liveProp.rules}</div>
-
-              {/* VERIFY — landlord + admin only */}
-              {canManage && <div className="vsec">
-                <h4>🏠 Availability Management</h4>
-                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                  <button className="bver" onClick={()=>{markTaken(liveProp.id);setSelProp(null);}}>{liveProp.status==="taken"?"↩ Mark Available":"🏠 Mark Taken"}</button>
-                  {user?.role==="admin" && liveProp.status==="taken" && <button className="bp" style={{padding:"6px 14px",fontSize:"0.78rem"}} onClick={()=>{adminVerify(liveProp.id);setSelProp(null);}}>✅ Admin Verify</button>}
-                  {user?.role==="admin" && !liveProp.flagged && <button className="bban" onClick={()=>{flagProp(liveProp.id);setSelProp(null);}}>🚩 Flag</button>}
-                  {user?.role==="admin" && liveProp.flagged && <button className="bapp" onClick={()=>{approveProp(liveProp.id);setSelProp(null);}}>✓ Restore</button>}
-                </div>
-              </div>}
-
-              {/* CONTACT SECTION */}
-              {user?.role==="tenant" && !isUnlocked(liveProp.id) && (
-                <div className="locked">
-                  <div className="li">🔒</div>
-                  <h4>Contact & Location Locked</h4>
-                  <p>Unlock to see the exact address and landlord contact details.</p>
-                  <button className="bunlock" onClick={()=>setPayModal({type:"unlock",propId:liveProp.id})}>🔓 Unlock for KSh {settings.unlockFee} via M-PESA</button>
-                </div>
-              )}
-              {user?.role==="tenant" && isUnlocked(liveProp.id) && liveProp.contact && (
-                <div className="mcbox">
-                  <h4>Contact the Landlord <span className="ulpill">🔓 Unlocked</span></h4>
-                  <div className="cgrid">
-                    {liveProp.contact.phone&&<a className="citem" href={`tel:${liveProp.contact.phone}`}>📞 {liveProp.contact.phone}</a>}
-                    {liveProp.contact.email&&<a className="citem" href={`mailto:${liveProp.contact.email}`}>✉️ {liveProp.contact.email}</a>}
-                    {liveProp.contact.whatsapp&&<a className="citem" href={`https://wa.me/${liveProp.contact.whatsapp}`} target="_blank" rel="noreferrer">💬 WhatsApp</a>}
-                  </div>
-                  <div className="srow">
-                    {liveProp.contact.whatsapp&&<a className="sbtn sb-wa" href={`https://wa.me/${liveProp.contact.whatsapp}`} target="_blank" rel="noreferrer">💬 WhatsApp</a>}
-                    {liveProp.contact.ig&&<a className="sbtn sb-ig" href={`https://instagram.com/${liveProp.contact.ig}`} target="_blank" rel="noreferrer">📸 Instagram</a>}
-                    {liveProp.contact.fb&&<a className="sbtn sb-fb" href={`https://facebook.com/${liveProp.contact.fb}`} target="_blank" rel="noreferrer">👍 Facebook</a>}
-                  </div>
-                </div>
-              )}
-              {user?.role!=="tenant" && liveProp.contact && (liveProp.contact.phone||liveProp.contact.whatsapp) && (
-                <div className="mcbox">
-                  <h4>Contact the Landlord</h4>
-                  <div className="cgrid">
-                    {liveProp.contact.phone&&<a className="citem" href={`tel:${liveProp.contact.phone}`}>📞 {liveProp.contact.phone}</a>}
-                    {liveProp.contact.email&&<a className="citem" href={`mailto:${liveProp.contact.email}`}>✉️ {liveProp.contact.email}</a>}
-                    {liveProp.contact.whatsapp&&<a className="citem" href={`https://wa.me/${liveProp.contact.whatsapp}`} target="_blank" rel="noreferrer">💬 WhatsApp</a>}
-                  </div>
-                  <div className="srow">
-                    {liveProp.contact.whatsapp&&<a className="sbtn sb-wa" href={`https://wa.me/${liveProp.contact.whatsapp}`} target="_blank" rel="noreferrer">💬 WhatsApp</a>}
-                    {liveProp.contact.ig&&<a className="sbtn sb-ig" href={`https://instagram.com/${liveProp.contact.ig}`} target="_blank" rel="noreferrer">📸 Instagram</a>}
-                    {liveProp.contact.fb&&<a className="sbtn sb-fb" href={`https://facebook.com/${liveProp.contact.fb}`} target="_blank" rel="noreferrer">👍 Facebook</a>}
-                    {liveProp.contact.tt&&<a className="sbtn sb-tt" href={`https://tiktok.com/@${liveProp.contact.tt}`} target="_blank" rel="noreferrer">🎵 TikTok</a>}
-                    {liveProp.contact.tw&&<a className="sbtn sb-tw" href={`https://twitter.com/${liveProp.contact.tw}`} target="_blank" rel="noreferrer">𝕏 Twitter</a>}
-                  </div>
-                </div>
-              )}
-              {!user && <div className="locked">
-                <div className="li">🔒</div><h4>Login to View Contacts</h4>
-                <p>Create a free tenant account. Pay KSh {settings.unlockFee} to unlock contacts.</p>
-                <button className="bp" style={{marginTop:0}} onClick={()=>{setSelProp(null);setAuthModal("tenant");}}>Login / Sign Up Free →</button>
-              </div>}
-              {user?.role==="tenant" && liveProp.status!=="taken" && (
-                <button className="maincbtn" style={{marginTop:"1rem"}} onClick={()=>{msg("Interest noted! Unlock contacts to reach the landlord.","info");setSelProp(null);}}>Express Interest →</button>
-              )}
-            </div>
+            <PropertyGallery media={liveProp.media} midx={midx} setMidx={setMidx} />
+            <PropertyDetails
+              liveProp={liveProp}
+              user={user}
+              isUnlocked={isUnlocked}
+              settings={settings}
+              setPayModal={setPayModal}
+              setAuthModal={setAuthModal}
+              setSelProp={setSelProp}
+            />
+            {canManage && (
+              <PropertyActions
+                canManage={canManage}
+                liveProp={liveProp}
+                markTaken={markTaken}
+                adminVerify={adminVerify}
+                flagProp={flagProp}
+                approveProp={approveProp}
+                setSelProp={setSelProp}
+                deleteProp={deleteProp}
+                user={user}
+              />
+            )}
           </div>
         </div>
       )}
