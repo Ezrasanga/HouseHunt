@@ -4,27 +4,29 @@ import { dirname, resolve } from 'path';
 import app from './app.js';
 import { connectDB } from './config/db.js';
 
+const env = globalThis.process?.env || {};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 dotenv.config({ path: resolve(__dirname, '.env') });
 
-const PORT = process.env.PORT || 5001;
+const PORT = env.PORT || 5001;
 
 async function start() {
   try {
-    await connectDB(process.env.MONGO_URI);
+    await connectDB(env.MONGO_URI);
     const server = app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
+      console.log(`Server running on port ${PORT} (${env.NODE_ENV || 'development'})`);
     });
 
-    process.on('SIGTERM', () => {
+    globalThis.process?.on('SIGTERM', () => {
       console.log('SIGTERM received, closing server');
-      server.close(() => process.exit(0));
+      server.close(() => globalThis.process?.exit(0));
     });
   } catch (err) {
     console.error('Failed to start server', err);
-    process.exit(1);
+    globalThis.process?.exit(1);
   }
 }
 

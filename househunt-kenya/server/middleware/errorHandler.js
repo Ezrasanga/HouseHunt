@@ -4,5 +4,7 @@ export function errorHandler(err, req, res, next) { // eslint-disable-line no-un
   res.status(status).json({
     success: false,
     message: err.message || 'Internal Server Error',
+    data: null,
+    errors: [{ field: 'server', message: err.message || 'Internal Server Error' }],
   });
 }
