@@ -1,8 +1,6 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 
-const env = globalThis.process?.env || {};
-
 export async function authenticate(req, res, next) {
   try {
     const authHeader = req.headers.authorization || '';
@@ -17,6 +15,7 @@ export async function authenticate(req, res, next) {
       });
     }
 
+    const env = globalThis.process?.env || {};
     const secret = env.JWT_SECRET;
     if (!secret) {
       throw new Error('JWT_SECRET is not configured');

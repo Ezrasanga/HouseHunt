@@ -1,10 +1,24 @@
 import Property from '../models/Property.js';
 import User from '../models/User.js';
 
+export function normalizeId(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object') {
+    if (typeof value.toString === 'function' && value.toString !== Object.prototype.toString) {
+      const stringValue = value.toString();
+      if (stringValue && stringValue !== '[object Object]') return stringValue;
+    }
+    if (value._id) return normalizeId(value._id);
+    if (value.id) return normalizeId(value.id);
+  }
+  return null;
+}
+
 function sanitizeUser(user) {
   if (!user) return null;
   return {
-    id: user.id || user._id?.toString?.(),
+    id: normalizeId(user.id || user._id),
     firstName: user.firstName,
     lastName: user.lastName,
     profileImage: user.profileImage || '',
@@ -58,7 +72,9 @@ function buildPublicFilter(query = {}) {
   if (furnished !== undefined) filter['amenities.furnished'] = furnished;
   const petFriendly = parseBoolean(query.petFriendly);
   if (petFriendly !== undefined) filter['amenities.petFriendly'] = petFriendly;
-  if (query.status) filter.status = String(query.status).toUpperCase();
+  if (query.status) {
+    filter.status = { $eq: String(query.status).toUpperCase(), $ne: 'HIDDEN' };
+  }
 
   if (query.search) {
     const searchRegex = new RegExp(String(query.search), 'i');
@@ -119,23 +135,9 @@ export async function getProperty(id, viewer = null) {
     throw error;
   }
 
-  // temporary debug: inspect owner shape and viewer id
-  // eslint-disable-next-line no-console
-  console.log('[DBG] property.owner=', JSON.stringify(property.owner), ' viewer=', viewer?.id);
-
-  let ownerId = null;
-  if (property.owner) {
-    if (typeof property.owner === 'string') {
-      ownerId = property.owner;
-    } else if (property.owner.id) {
-      ownerId = property.owner.id;
-    } else if (property.owner._id) {
-      ownerId = property.owner._id.toString();
-    } else if (typeof property.owner.toString === 'function') {
-      ownerId = property.owner.toString();
-    }
-  }
-  const isOwner = Boolean(viewer?.id && ownerId && ownerId === viewer.id);
+  const ownerId = normalizeId(property.owner);
+  const viewerId = normalizeId(viewer?.id);
+  const isOwner = Boolean(viewerId && ownerId && ownerId === viewerId);
   const isAdmin = viewer?.role === 'ADMIN';
   const canView = isAdmin || isOwner || (property.isApproved && property.status !== 'HIDDEN');
 
@@ -173,7 +175,7 @@ export async function createProperty(actor, payload = {}) {
     throw error;
   }
 
-  const ownerId = actor.role === 'LANDLORD' ? actor.id : payload.owner || actor.id;
+  const ownerId = actor.id;
   const owner = await User.findById(ownerId);
   if (!owner) {
     const error = new Error('Owner user not found');
@@ -184,9 +186,9 @@ export async function createProperty(actor, payload = {}) {
   const property = await Property.create({
     ...validation.data,
     owner: owner._id,
-    isApproved: actor.role === 'ADMIN' ? Boolean(validation.data.isApproved) : false,
-    status: actor.role === 'ADMIN' ? (validation.data.status || 'AVAILABLE') : 'PENDING',
-    approvedBy: actor.role === 'ADMIN' && validation.data.isApproved ? actor.id : null,
+    isApproved: false,
+    status: 'PENDING',
+    approvedBy: null,
   });
 
   const populated = await Property.findById(property._id).populate('owner', 'firstName lastName profileImage').lean();
@@ -213,7 +215,7 @@ export async function updateProperty(id, actor, payload = {}) {
     throw error;
   }
 
-  const isOwner = property.owner?.toString?.() === actor.id;
+  const isOwner = normalizeId(property.owner) === normalizeId(actor.id);
   const isAdmin = actor.role === 'ADMIN';
 
   if (!isOwner && !isAdmin) {
@@ -228,7 +230,7 @@ export async function updateProperty(id, actor, payload = {}) {
     throw error;
   }
 
-  const validation = validatePropertyInput(payload, { allowAdminFields: isAdmin });
+  const validation = validatePropertyInput(payload);
   if (!validation.success) {
     const error = new Error('Validation failed');
     error.status = 400;
@@ -274,7 +276,7 @@ export async function deleteProperty(id, actor) {
     throw error;
   }
 
-  const isOwner = property.owner?.toString?.() === actor.id;
+  const isOwner = normalizeId(property.owner) === normalizeId(actor.id);
   const isAdmin = actor.role === 'ADMIN';
 
   if (!isOwner && !isAdmin) {
@@ -388,10 +390,10 @@ export async function featureProperty(id, actor, payload = {}) {
   return { property: sanitizeProperty(populated) };
 }
 
-function validatePropertyInput(payload = {}, options = {}) {
+function validatePropertyInput(payload = {}) {
   const errors = [];
   const data = payload || {};
-  const allowedFields = ['title', 'description', 'price', 'propertyType', 'location', 'bedrooms', 'bathrooms', 'amenities', 'images', 'coverImage', 'status', 'isApproved', 'owner'];
+  const allowedFields = ['title', 'description', 'price', 'propertyType', 'location', 'bedrooms', 'bathrooms', 'amenities', 'images', 'coverImage'];
   const updates = {};
 
   if (!Object.keys(data).length) {
@@ -464,22 +466,6 @@ function validatePropertyInput(payload = {}, options = {}) {
       continue;
     }
 
-    if (field === 'status') {
-      const validStatuses = ['AVAILABLE', 'OCCUPIED', 'PENDING', 'HIDDEN'];
-      const value = String(data[field]).toUpperCase();
-      if (!validStatuses.includes(value)) errors.push({ field, message: 'Invalid property status' });
-      else updates.status = value;
-      continue;
-    }
-
-    if (field === 'isApproved') {
-      if (options.allowAdminFields) updates.isApproved = Boolean(data[field]);
-      continue;
-    }
-
-    if (field === 'owner') {
-      if (options.allowAdminFields) updates.owner = data[field];
-    }
   }
 
   if (errors.length > 0) return { success: false, errors };
