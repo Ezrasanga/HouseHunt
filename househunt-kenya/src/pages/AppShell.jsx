@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import Navbar from "../components/layout/Navbar";
 import Hero from "../components/layout/Hero";
 import SearchBar from "../components/layout/SearchBar";
@@ -111,6 +112,7 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
   const [settings, setSettings] = useState({boostFee:200,unlockFee:100,requireApproval:false});
   const fileRef = useRef();
   const admFileRef = useRef();
+  const modalRef = useRef(null);
 
   const addLog = (action, detail, kind="info") => setLog(l=>[{id:Date.now(),time:nowStr(),action,detail,kind},...l.slice(0,49)]);
   const msg = (m, k="ok") => { setToast({m,k}); setTimeout(()=>setToast(null),3000); };
@@ -130,7 +132,16 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
   });
 
   const myProps = user?.role==="landlord" ? props.filter(p=>p.landlordId===user.data.id) : [];
+  const myAvailable = myProps.filter(p=>p.status==="available");
+  const myTaken = myProps.filter(p=>p.status==="taken");
+  const myBoosted = myProps.filter(p=>p.boosted);
+  const myPending = myProps.filter(p=>p.approved===false);
   const isUnlocked = id => user?.role==="tenant" && user.data.unlocked?.includes(id);
+  const tenantUnlockedProps = user?.role==="tenant" ? props.filter(p=>isUnlocked(p.id)) : [];
+  const tenantActivity = user?.role==="tenant" ? log.filter(a=>a.detail.includes(user.data.name)).slice(0,4) : [];
+  const unlockedRent = tenantUnlockedProps.reduce((sum,p)=>sum+p.rent,0);
+  const tenantFirstName = user?.data?.name?.split(" ")[0] || "Tenant";
+  const landFirstName = user?.data?.name?.split(" ")[0] || "Landlord";
   const flagged = props.filter(p=>p.flagged);
   const pending = props.filter(p=>p.approved===false);
   const taken = props.filter(p=>p.status==="taken");
@@ -349,9 +360,38 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
   };
 
   const liveProp = selProp ? props.find(p=>p.id===selProp.id)||selProp : null;
+  const selectedLandlord = liveProp ? landlords.find(l=>l.id===liveProp.landlordId) : null;
   const canManage = liveProp && (user?.role==="admin"||(user?.role==="landlord"&&liveProp.landlordId===user?.data?.id));
   const activeAnns = anns.filter(a=>a.active);
   const activeTab = tab;
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const closeModal = () => {
+    if (location.pathname.startsWith("/property/")) {
+      const returnTo = location.state?.from || "/";
+      navigate(returnTo, { replace: true });
+    } else {
+      setSelProp(null);
+    }
+  };
+
+  const openProperty = property => {
+    setSelProp(property);
+    setMidx(0);
+    if (!location.pathname.startsWith("/property/")) {
+      navigate(`/property/${property.id}`, { state: { from: location.pathname } });
+    }
+  };
+
+  useEffect(() => {
+    if (liveProp) {
+      document.body.style.overflow = "hidden";
+      modalRef.current?.focus();
+      return () => { document.body.style.overflow = ""; };
+    }
+    return undefined;
+  }, [liveProp]);
 
   // ── RENDER ──────────────────────────────────────────────────────────────────
   return (
@@ -383,7 +423,7 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
           <div className="sh"><div className="shey">Featured & Boosted</div><div className="shtt">Top Listings This Week</div></div>
           <PropertyGrid
             properties={sorted.filter(p=>p.boosted).slice(0,3)}
-            onView={property=>{setSelProp(property);setMidx(0);}}
+            onView={openProperty}
             user={user}
             onDel={deleteProp}
           />
@@ -394,13 +434,90 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
       {activeTab==="tenant" && (
         <div className="page">
           {!user && <div className="guestbanner"><p><strong>🔒 Guest mode.</strong> Contacts & locations are hidden. Login free to browse.</p><button className="bp" style={{fontSize:"0.78rem",padding:"7px 16px"}} onClick={()=>setAuthModal("tenant")}>Login / Sign Up Free</button></div>}
+          {user && (
+            <>
+              <div className="thdr">
+                <div>
+                  <div className="shey">Tenant Dashboard</div>
+                  <div className="shtt">Your home search, unlocks and latest activity</div>
+                </div>
+                <button className="bp" style={{height:"42px"}} onClick={()=>{ setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>
+              </div>
+              <div className="tkpis">
+                <div className="tkpi">
+                  <div className="tkpi-label">Welcome back</div>
+                  <strong>{tenantFirstName}</strong>
+                  <div className="tkpi-note">Browse homes, unlock contacts, and move faster.</div>
+                </div>
+                <div className="tkpi">
+                  <div className="tkpi-label">Unlocked contacts</div>
+                  <strong>{tenantUnlockedProps.length}</strong>
+                  <div className="tkpi-note">{tenantUnlockedProps.length ? `${tenantUnlockedProps.length} listing${tenantUnlockedProps.length > 1 ? "s" : ""} unlocked` : "Unlock a listing to reveal contact details."}</div>
+                </div>
+                <div className="tkpi">
+                  <div className="tkpi-label">Homes matching filters</div>
+                  <strong>{filtered.length}</strong>
+                  <div className="tkpi-note">{filtered.filter(p=>p.status==="available").length} available to view.</div>
+                </div>
+              </div>
+              {tenantUnlockedProps.length > 0 ? (
+                <div className="tunlock">
+                  <div className="tunlock-head">
+                    <div>
+                      <h3>Unlocked contacts</h3>
+                      <p>Review your unlocked homes and quickly jump back to landlord contact details.</p>
+                    </div>
+                    <div className="tunlock-meta">{KES(unlockedRent)} total rent</div>
+                  </div>
+                  <div className="tunlock-grid">
+                    {tenantUnlockedProps.map(p=>(
+                      <div key={p.id} className="tunlock-card">
+                        <div className="tunlock-title">{p.title}</div>
+                        <div className="tunlock-meta">📍 {p.location}</div>
+                        <div className="tunlock-short">{p.rooms} · {p.type}</div>
+                        <div className="tunlock-actions">
+                          <span className={`sbadge sb-${p.status==="available"?"av":"tk"}`}>{p.status==="available"?"Available":"Taken"}</span>
+                          <span className="tunlock-rent">{KES(p.rent)}/mo</span>
+                        </div>
+                        <button className="bp" style={{width:"100%",marginTop:"0.8rem"}} onClick={()=>openProperty(p)}>View Details</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="tbanner">
+                  <strong>No unlocked contacts yet.</strong> Open a listing and unlock the full contact details with a one-time M-PESA payment.
+                </div>
+              )}
+              {tenantActivity.length > 0 && (
+                <div className="tactivity">
+                  <div className="tactivity-head">
+                    <div>
+                      <h3>Recent activity</h3>
+                      <p>Track your latest tenant actions and unlock history.</p>
+                    </div>
+                  </div>
+                  {tenantActivity.map(a=>(
+                    <div key={a.id} className="tact-row">
+                      <span className={`tact-dot ${a.kind}`}/>
+                      <div className="tact-body">
+                        <div className="tact-title">{a.action}</div>
+                        <div className="tact-detail">{a.detail}</div>
+                      </div>
+                      <div className="tact-time">{a.time}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
           <div className="sh"><div className="shey">Browse listings</div><div className="shtt">Find Your Home</div></div>
           <SearchBar search={search} setSearch={setSearch} budget={budget} setBudget={setBudget} ptype={ptype} setPtype={setPtype} />
           {filtered.length===0
-            ? <div className="noresult"><h3>No listings found</h3><p>Try adjusting your filters.</p></div>
+            ? <div className="noresult"><h3>No listings found</h3><p>Try adjusting your filters or clear the search to see all available homes.</p><button onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button></div>
             : <PropertyGrid
                 properties={filtered}
-                onView={property=>{setSelProp(property);setMidx(0);}}
+                onView={openProperty}
                 user={user}
                 onDel={deleteProp}
               />}
@@ -411,6 +528,22 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
       {activeTab==="landlord" && user?.role==="landlord" && (
         <div className="page">
           <div className="sh"><div className="shey">Property Owner</div><div className="shtt">Landlord Dashboard</div></div>
+          <div className="ldashboard-top">
+            <div className="lhero-card">
+              <div>
+                <div className="lhero-title">Welcome back, {landFirstName}</div>
+                <p>Manage your portfolio, monitor listing performance, and keep tenant leads moving.</p>
+              </div>
+              <div className="lhero-note">Your active portfolio is shown below. Use quick actions to mark availability, boost listings, or update contact details.</div>
+            </div>
+            <div className="lkpis">
+              <div className="lkpi"><span>{myProps.length}</span><strong>Listings</strong></div>
+              <div className="lkpi"><span className="lkpi-stat grn">{myAvailable.length}</span><strong>Available</strong></div>
+              <div className="lkpi"><span className="lkpi-stat red">{myTaken.length}</span><strong>Taken</strong></div>
+              <div className="lkpi"><span className="lkpi-stat amber">{myBoosted.length}</span><strong>Boosted</strong></div>
+              <div className="lkpi"><span className="lkpi-stat pd">{myPending.length}</span><strong>Pending Review</strong></div>
+            </div>
+          </div>
           <div className="dlayout">
             <div className="dside">
               <div className="dshead">
@@ -530,10 +663,13 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
                       <div className="lmeta">📍 {p.location} · {p.type} · {p.media?.length||0} media{p.approved===false?" · ⏳ Pending":""}</div>
                     </div>
                     <div className="lacts">
-                      <span className={`sbadge sb-${p.status==="available"?"av":"tk"}`}>{p.status==="available"?"✓ Available":"⊘ Taken"}</span>
+                      <div className="lstatus-group">
+                        <span className={`sbadge sb-${p.status==="available"?"av":"tk"}`}>{p.status==="available"?"✓ Available":"⊘ Taken"}</span>
+                        {p.approved===false && <span className="sbadge sb-pd">⏳ Pending</span>}
+                        {p.boosted && <span className="sbadge sb-bo">⭐ Boosted</span>}
+                      </div>
                       <div className="lrent">{KES(p.rent)}</div>
                       {!p.boosted && <button className="bboost" onClick={()=>setPayModal({type:"boost",propId:p.id})}>⭐ Boost</button>}
-                      {p.boosted && <span style={{fontSize:"0.66rem",color:"#C4991A",fontWeight:700}}>⭐ Boosted</span>}
                       <button className="bver" onClick={()=>markTaken(p.id)}>{p.status==="taken"?"↩ Unmark":"🏠 Mark Taken"}</button>
                       <button className="bdel" onClick={()=>deleteProp(p.id)}>🗑</button>
                     </div>
@@ -850,25 +986,32 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
 
       {/* ─── PROPERTY MODAL ─── */}
       {liveProp && (
-        <div className="mov" onClick={e=>e.target===e.currentTarget&&setSelProp(null)}>
+        <div ref={modalRef} className="mov" role="dialog" aria-modal="true" aria-labelledby="property-details-title" tabIndex={-1} onKeyDown={e=>e.key==="Escape"&&closeModal()} onClick={e=>e.target===e.currentTarget&&closeModal()}>
           <div className="mdl">
             <div className="mhero" style={{background:`linear-gradient(135deg,${liveProp.color}cc,${liveProp.color}77)`}}>
-              {liveProp.media?.length>0 && (liveProp.media[midx]?.type==="video"
-                ?<video src={liveProp.media[midx].url} autoPlay muted loop/>
-                :<img src={liveProp.media[midx].url} alt=""/>)}
-              <div className="mhero-ov"/><span className="mhero-init">{liveProp.initials}</span>
+              {liveProp.media?.length>0 ? (
+                liveProp.media[midx]?.type==="video"
+                  ? <video src={liveProp.media[midx].url} autoPlay muted loop playsInline preload="metadata" alt={liveProp.title} />
+                  : <img src={liveProp.media[midx].url} alt={liveProp.title} />
+              ) : (
+                <div className="mhero-empty" aria-label={liveProp.title}>
+                  <span>{liveProp.initials}</span>
+                </div>
+              )}
+              <div className="mhero-ov" />
               {canManage && <button className="bdel" style={{position:"absolute",top:12,left:12,zIndex:10}} onClick={()=>deleteProp(liveProp.id)}>🗑 Delete</button>}
-              <button className="mclose" onClick={()=>setSelProp(null)}>✕</button>
+              <button className="mclose" aria-label="Close property details" onClick={closeModal}>✕</button>
             </div>
             <PropertyGallery media={liveProp.media} midx={midx} setMidx={setMidx} />
             <PropertyDetails
               liveProp={liveProp}
+              landlord={selectedLandlord}
               user={user}
               isUnlocked={isUnlocked}
               settings={settings}
               setPayModal={setPayModal}
               setAuthModal={setAuthModal}
-              setSelProp={setSelProp}
+              closeModal={closeModal}
             />
             {canManage && (
               <PropertyActions

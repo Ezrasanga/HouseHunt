@@ -8,8 +8,14 @@ export default function PropertyCard({ p, onView, user, onDel }) {
       {p.boosted && <div className="crown">⭐ Featured Listing</div>}
       <div className="pthumb" onClick={() => onView(p)}>
         <div className="pthumb-bg" style={{ background: `linear-gradient(135deg,${p.color}cc,${p.color}77)` }} />
-        {cover && <img src={cover.url} alt={p.title} />}
-        {cover && <div className="pthumb-ov" />}
+        {cover ? (
+          <>
+            <img src={cover.url} alt={p.title} />
+            <div className="pthumb-ov" />
+          </>
+        ) : (
+          <div className="pthumb-empty"><span>{p.initials}</span></div>
+        )}
         <span className="pinit">{p.initials}</span>
         <div className="ptyp">{p.type}</div>
         {p.status === "taken" && <div className="ptaken">⊘ Taken</div>}
