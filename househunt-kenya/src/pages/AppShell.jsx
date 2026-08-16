@@ -106,6 +106,14 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
   const [cwarn, setCwarn] = useState(false);
   const [authF, setAuthF] = useState({name:"",email:"",password:"",mode:authMode ?? "login"});
   const [authErr, setAuthErr] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [formInvalid, setFormInvalid] = useState({});
+  const [propLoading, setPropLoading] = useState(false);
+  const [payLoading, setPayLoading] = useState(false);
+  const [annLoading, setAnnLoading] = useState(false);
+  const [adminListingLoading, setAdminListingLoading] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
   const [annF, setAnnF] = useState({title:"",body:"",type:"success"});
   const [admListF, setAdmListF] = useState({title:"",location:"",rent:"",rooms:"",type:"Apartment",rules:"",tags:""});
   const [admMedia, setAdmMedia] = useState([]);
@@ -166,6 +174,7 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
       return;
     }
 
+    setAuthLoading(true);
     try {
       const payload = { email: authF.email, password: authF.password, role };
       const { data } = await loginApi(payload);
@@ -184,6 +193,8 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
       addLog("User login", `${data.user.name} (${role})`, "info");
     } catch (err) {
       setAuthErr(err.response?.data?.message ?? err.message ?? "Login failed.");
+    } finally {
+      setAuthLoading(false);
     }
   };
 
@@ -198,6 +209,7 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
       return;
     }
 
+    setAuthLoading(true);
     try {
       const payload = {
         name: authF.name,
@@ -230,6 +242,8 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
       msg("Account created! Welcome 🎉", "ok");
     } catch (err) {
       setAuthErr(err.response?.data?.message ?? err.message ?? "Registration failed.");
+    } finally {
+      setAuthLoading(false);
     }
   };
 
@@ -284,29 +298,57 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
     setConfModal(null);
   };
 
-  const addProp = () => {
-    if(!form.title||!form.location||!form.rent){ msg("Fill required fields.","warn"); return; }
-    if(dirtyObj(form)){ setCwarn(true); msg("❌ Inappropriate content detected.","err"); return; }
-    const colors=["#B5451B","#2D5016","#1A1A2E","#7C3A1E","#C4991A","#E05A1E"];
-    const tagArr = form.tags?form.tags.split(",").map(t=>t.trim()).filter(Boolean):["New Listing"];
-    const np={id:Date.now(),...form,rent:parseInt(form.rent),tags:tagArr,
-      color:colors[props.length%colors.length],initials:form.location.slice(0,2).toUpperCase(),
-      media:[...pendMedia],landlordId:user.data.id,status:"available",boosted:false,
-      flagged:false,approved:!settings.requireApproval,
-      contact:{phone:user.data.phone||"",whatsapp:user.data.whatsapp||"",email:user.data.email||"",
-        ig:user.data.ig||"",fb:user.data.fb||"",tt:user.data.tt||"",tw:user.data.tw||""}};
-    setProps(l=>[np,...l]);
-    setForm({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});
-    setPendMedia([]); setCwarn(false);
-    addLog("Listing posted",`${np.title} by ${user.data.name}`,"success");
-    msg(settings.requireApproval?"Submitted for review.":"✅ Listing is live!","ok");
-    setLdTab("mylistings");
+  const addProp = async () => {
+    setFormError("");
+    setFormInvalid({});
+
+    if(!form.title||!form.location||!form.rent){
+      setFormInvalid({ title: !form.title, location: !form.location, rent: !form.rent });
+      setFormError("Please complete all required fields before posting.");
+      return;
+    }
+    if(dirtyObj(form)){
+      setCwarn(true);
+      setFormError("Inappropriate content detected. Please revise your listing.");
+      msg("❌ Inappropriate content detected.","err");
+      return;
+    }
+
+    setPropLoading(true);
+    try {
+      await Promise.resolve();
+      const colors=["#B5451B","#2D5016","#1A1A2E","#7C3A1E","#C4991A","#E05A1E"];
+      const tagArr = form.tags?form.tags.split(",").map(t=>t.trim()).filter(Boolean):["New Listing"];
+      const np={id:Date.now(),...form,rent:parseInt(form.rent),tags:tagArr,
+        color:colors[props.length%colors.length],initials:form.location.slice(0,2).toUpperCase(),
+        media:[...pendMedia],landlordId:user.data.id,status:"available",boosted:false,
+        flagged:false,approved:!settings.requireApproval,
+        contact:{phone:user.data.phone||"",whatsapp:user.data.whatsapp||"",email:user.data.email||"",
+          ig:user.data.ig||"",fb:user.data.fb||"",tt:user.data.tt||"",tw:user.data.tw||""}};
+      setProps(l=>[np,...l]);
+      setForm({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});
+      setPendMedia([]); setCwarn(false);
+      addLog("Listing posted",`${np.title} by ${user.data.name}`,"success");
+      msg(settings.requireApproval?"Submitted for review.":"✅ Listing is live!","ok");
+      setLdTab("mylistings");
+    } finally {
+      setPropLoading(false);
+    }
   };
 
-  const saveProfile = () => {
-    if(dirty(user.data.name)){ msg("❌ Name contains inappropriate content.","err"); return; }
-    setLandlords(l=>l.map(x=>x.id===user.data.id?{...user.data}:x));
-    msg("Profile saved!","ok");
+  const saveProfile = async () => {
+    if(dirty(user.data.name)){
+      msg("❌ Name contains inappropriate content.","err");
+      return;
+    }
+    setProfileSaving(true);
+    try {
+      await Promise.resolve();
+      setLandlords(l=>l.map(x=>x.id===user.data.id?{...user.data}:x));
+      msg("Profile saved!","ok");
+    } finally {
+      setProfileSaving(false);
+    }
   };
 
   const handleFiles = (files, setter) => {
@@ -317,46 +359,64 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
     });
   };
 
-  const simulatePay = () => {
+  const simulatePay = async () => {
     if(!payModal) return;
-    if(payModal.type==="boost"){
-      setProps(l=>l.map(x=>x.id===payModal.propId?{...x,boosted:true}:x));
-      addLog("Listing boosted",`ID ${payModal.propId} · KSh ${settings.boostFee}`,"payment");
-      msg("⭐ Listing boosted to top!","ok");
-    } else {
-      const nd={...user.data,unlocked:[...(user.data.unlocked||[]),payModal.propId]};
-      setUser({...user,data:nd});
-      setTenants(l=>l.map(t=>t.id===nd.id?nd:t));
-      addLog("Contact unlocked",`${nd.name} · ID ${payModal.propId} · KSh ${settings.unlockFee}`,"payment");
-      msg("🔓 Contacts & location unlocked!","ok");
+    setPayLoading(true);
+    try {
+      await Promise.resolve();
+      if(payModal.type==="boost"){
+        setProps(l=>l.map(x=>x.id===payModal.propId?{...x,boosted:true}:x));
+        addLog("Listing boosted",`ID ${payModal.propId} · KSh ${settings.boostFee}`,"payment");
+        msg("⭐ Listing boosted to top!","ok");
+      } else {
+        const nd={...user.data,unlocked:[...(user.data.unlocked||[]),payModal.propId]};
+        setUser({...user,data:nd});
+        setTenants(l=>l.map(t=>t.id===nd.id?nd:t));
+        addLog("Contact unlocked",`${nd.name} · ID ${payModal.propId} · KSh ${settings.unlockFee}`,"payment");
+        msg("🔓 Contacts & location unlocked!","ok");
+      }
+      setPayModal(null);
+    } finally {
+      setPayLoading(false);
     }
-    setPayModal(null);
   };
 
-  const postAnn = () => {
+  const postAnn = async () => {
     if(!annF.title||!annF.body){ msg("Fill all fields.","warn"); return; }
     if(dirty(annF.title)||dirty(annF.body)){ msg("❌ Inappropriate content.","err"); return; }
-    setAnns(l=>[{id:"A"+Date.now(),...annF,date:todayStr(),active:true},...l]);
-    setAnnF({title:"",body:"",type:"success"});
-    addLog("Announcement posted",annF.title,"success");
-    msg("✅ Announcement published!","ok");
+    setAnnLoading(true);
+    try {
+      await Promise.resolve();
+      setAnns(l=>[{id:"A"+Date.now(),...annF,date:todayStr(),active:true},...l]);
+      setAnnF({title:"",body:"",type:"success"});
+      addLog("Announcement posted",annF.title,"success");
+      msg("✅ Announcement published!","ok");
+    } finally {
+      setAnnLoading(false);
+    }
   };
 
-  const adminPostListing = () => {
+  const adminPostListing = async () => {
     if(!admListF.title||!admListF.location||!admListF.rent){ msg("Fill required fields.","warn"); return; }
     if(dirtyObj(admListF)){ msg("❌ Inappropriate content.","err"); return; }
-    const colors=["#B5451B","#2D5016","#1A1A2E","#7C3A1E","#C4991A","#E05A1E"];
-    const tagArr=admListF.tags?admListF.tags.split(",").map(t=>t.trim()).filter(Boolean):["Admin Featured"];
-    const np={id:Date.now(),...admListF,rent:parseInt(admListF.rent),tags:tagArr,
-      color:colors[props.length%colors.length],initials:admListF.location.slice(0,2).toUpperCase(),
-      media:[...admMedia],landlordId:"ADMIN",status:"available",boosted:true,
-      flagged:false,approved:true,
-      contact:{phone:"+254 000 000 000",whatsapp:"",email:"admin@househunt.ke",ig:"",fb:"HouseHuntKenya",tt:"",tw:""}};
-    setProps(l=>[np,...l]);
-    setAdmListF({title:"",location:"",rent:"",rooms:"",type:"Apartment",rules:"",tags:""});
-    setAdmMedia([]);
-    addLog("Admin posted listing",np.title,"success");
-    msg("✅ Admin listing live & boosted!","ok");
+    setAdminListingLoading(true);
+    try {
+      await Promise.resolve();
+      const colors=["#B5451B","#2D5016","#1A1A2E","#7C3A1E","#C4991A","#E05A1E"];
+      const tagArr=admListF.tags?admListF.tags.split(",").map(t=>t.trim()).filter(Boolean):["Admin Featured"];
+      const np={id:Date.now(),...admListF,rent:parseInt(admListF.rent),tags:tagArr,
+        color:colors[props.length%colors.length],initials:admListF.location.slice(0,2).toUpperCase(),
+        media:[...admMedia],landlordId:"ADMIN",status:"available",boosted:true,
+        flagged:false,approved:true,
+        contact:{phone:"+254 000 000 000",whatsapp:"",email:"admin@househunt.ke",ig:"",fb:"HouseHuntKenya",tt:"",tw:""}};
+      setProps(l=>[np,...l]);
+      setAdmListF({title:"",location:"",rent:"",rooms:"",type:"Apartment",rules:"",tags:""});
+      setAdmMedia([]);
+      addLog("Admin posted listing",np.title,"success");
+      msg("✅ Admin listing live & boosted!","ok");
+    } finally {
+      setAdminListingLoading(false);
+    }
   };
 
   const liveProp = selProp ? props.find(p=>p.id===selProp.id)||selProp : null;
@@ -563,8 +623,8 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
             <div>
               {ldTab==="profile" && <div className="fcard">
                 <h3>My Profile</h3><p className="sub">Your public display name on all listings.</p>
-                <div className="fg"><label>Display Name</label><input value={user.data.name} onChange={e=>setUser(u=>({...u,data:{...u.data,name:e.target.value}}))} /></div>
-                <button className="bp" onClick={saveProfile}>Save Profile →</button>
+                <div className="fg"><label>Display Name</label><input value={user.data.name} onChange={e=>setUser(u=>({...u,data:{...u.data,name:e.target.value}}))} disabled={profileSaving} /></div>
+                <button className="bp" onClick={saveProfile} disabled={profileSaving} aria-busy={profileSaving}>{profileSaving ? "Saving profile…" : "Save Profile →"}</button>
               </div>}
 
               {ldTab==="social" && <div className="fcard">
@@ -629,26 +689,27 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
               {ldTab==="listing" && <div className="fcard">
                 <h3>Add New Listing</h3>
                 <p className="sub">Free to post. Pay KSh {settings.boostFee} to boost to the top. {pendMedia.length>0 && `${pendMedia.length} media file(s) ready.`}</p>
+                {formError && <div className="form-error" role="alert">{formError}</div>}
                 {cwarn && <div className="cwarn"><p>⚠️ Your content contains inappropriate language. Please revise before submitting.</p></div>}
                 <div className="frow">
-                  <div className="fg"><label>Property Title *</label><input placeholder="e.g. 2 Bedroom in Westlands" value={form.title} onChange={e=>{setForm({...form,title:e.target.value});setCwarn(false);}}/></div>
-                  <div className="fg"><label>Location *</label><input placeholder="Westlands, Nairobi" value={form.location} onChange={e=>setForm({...form,location:e.target.value})}/></div>
+                  <div className={`fg${formInvalid.title?" invalid":""}`}><label>Property Title *</label><input placeholder="e.g. 2 Bedroom in Westlands" value={form.title} onChange={e=>{setForm({...form,title:e.target.value});setCwarn(false);setFormInvalid({...formInvalid,title:false});setFormError("");}} disabled={propLoading}/></div>
+                  <div className={`fg${formInvalid.location?" invalid":""}`}><label>Location *</label><input placeholder="Westlands, Nairobi" value={form.location} onChange={e=>{setForm({...form,location:e.target.value});setFormInvalid({...formInvalid,location:false});setFormError("");}} disabled={propLoading}/></div>
                 </div>
                 <div className="frow">
-                  <div className="fg"><label>Monthly Rent (KES) *</label><input type="number" placeholder="25000" value={form.rent} onChange={e=>setForm({...form,rent:e.target.value})}/></div>
-                  <div className="fg"><label>Property Type</label><select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}>{["Bedsitter","Room","Apartment","House","Penthouse"].map(t=><option key={t}>{t}</option>)}</select></div>
+                  <div className={`fg${formInvalid.rent?" invalid":""}`}><label>Monthly Rent (KES) *</label><input type="number" placeholder="25000" value={form.rent} onChange={e=>{setForm({...form,rent:e.target.value});setFormInvalid({...formInvalid,rent:false});setFormError("");}} disabled={propLoading}/></div>
+                  <div className="fg"><label>Property Type</label><select value={form.type} onChange={e=>setForm({...form,type:e.target.value})} disabled={propLoading}>{["Bedsitter","Room","Apartment","House","Penthouse"].map(t=><option key={t}>{t}</option>)}</select></div>
                 </div>
-                <div className="fg"><label>Bedrooms & Facilities</label><input placeholder="2 Bed · 1 Bath · DSQ" value={form.rooms} onChange={e=>setForm({...form,rooms:e.target.value})}/></div>
-                <div className="fg"><label>Amenity Tags (comma-separated)</label><input placeholder="WiFi, Parking, Security" value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})}/></div>
-                <div className="fg"><label>House Rules</label><textarea placeholder="No pets. 2 months deposit." value={form.rules} onChange={e=>{setForm({...form,rules:e.target.value});setCwarn(false);}}/></div>
+                <div className="fg"><label>Bedrooms & Facilities</label><input placeholder="2 Bed · 1 Bath · DSQ" value={form.rooms} onChange={e=>setForm({...form,rooms:e.target.value})} disabled={propLoading}/></div>
+                <div className="fg"><label>Amenity Tags (comma-separated)</label><input placeholder="WiFi, Parking, Security" value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})} disabled={propLoading}/></div>
+                <div className="fg"><label>House Rules</label><textarea placeholder="No pets. 2 months deposit." value={form.rules} onChange={e=>{setForm({...form,rules:e.target.value});setCwarn(false);}} disabled={propLoading}/></div>
                 {pendMedia.length>0 && <div style={{display:"flex",gap:6,marginBottom:"1rem",flexWrap:"wrap"}}>{pendMedia.slice(0,5).map((m,i)=>(
                   <div key={i} style={{width:50,height:38,borderRadius:6,overflow:"hidden",border:"1px solid rgba(181,69,27,0.18)"}}>
                     {m.type==="image"?<img src={m.url} style={{width:"100%",height:"100%",objectFit:"cover"}} alt=""/>:<video src={m.url} style={{width:"100%",height:"100%",objectFit:"cover"}} muted/>}
                   </div>
                 ))}{pendMedia.length>5&&<div style={{width:50,height:38,borderRadius:6,background:"rgba(10,10,24,0.07)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.68rem",color:"#bbb"}}>+{pendMedia.length-5}</div>}</div>}
                 <div style={{display:"flex",gap:8}}>
-                  <button className="bp" style={{flex:1,padding:"12px"}} onClick={addProp}>Post Listing Free →</button>
-                  <button className="bboost" onClick={()=>msg("Post your listing first, then boost from My Listings.","info")}>⭐ KSh {settings.boostFee} Boost</button>
+                  <button className="bp" style={{flex:1,padding:"12px"}} onClick={addProp} disabled={propLoading} aria-busy={propLoading}>{propLoading ? "Posting…" : "Post Listing Free →"}</button>
+                  <button className="bboost" onClick={()=>msg("Post your listing first, then boost from My Listings.","info")} disabled={propLoading}>⭐ KSh {settings.boostFee} Boost</button>
                 </div>
               </div>}
 
@@ -694,6 +755,12 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
             <div>
               <div className="atb-title">HouseHunt Kenya — Admin Control Centre</div>
               <div className="atb-sub">Full control over listings, users, content & site settings.</div>
+              <div className="admin-topbar-summary">
+                <span className="admin-pill">{props.length} Listings</span>
+                <span className="admin-pill">{landlords.length + tenants.length} Users</span>
+                <span className="admin-pill">{pending.length} Pending</span>
+                <span className="admin-pill">{flagged.length} Flagged</span>
+              </div>
             </div>
           </div>
           <div className="admin-page">
@@ -711,11 +778,11 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
                     ["flagged","🚩","Flagged",flagged.length],
                     ["pending","⏳","Pending",pending.length],
                     ["verify","✅","Verify Taken",taken.length],
-                    ["users","👥","Users"],
-                    ["announce","📢","Announcements"],
+                    ["users","👥","Users",landlords.length + tenants.length],
+                    ["announce","📢","Announcements",activeAnns.length],
                     ["post","➕","Post New Listing"],
                     ["settings","⚙️","Site Settings"],
-                    ["activity","📋","Activity Log"],
+                    ["activity","📋","Activity Log",log.length],
                   ].map(([k,ic,lb,cnt])=>(
                     <button key={k} className={`snb${adTab===k?" on":""}`} onClick={()=>setAdTab(k)}>
                       <span className="snbi">{ic}</span>{lb}
@@ -729,6 +796,28 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
                 {/* OVERVIEW */}
                 {adTab==="overview" && <div className="atab">
                   <h3>Platform Overview</h3><p className="sub">Live snapshot of HouseHunt Kenya.</p>
+                  <div className="admin-summary-grid">
+                    <div className="admin-summary-card">
+                      <div className="admin-card-title">Platform health</div>
+                      <div className="admin-card-value">{props.length} listings</div>
+                      <div className="admin-card-meta">{pending.length} pending review · {flagged.length} flagged</div>
+                    </div>
+                    <div className="admin-summary-card">
+                      <div className="admin-card-title">User base</div>
+                      <div className="admin-card-value">{landlords.length + tenants.length} users</div>
+                      <div className="admin-card-meta">{landlords.length} landlords · {tenants.length} tenants</div>
+                    </div>
+                    <div className="admin-summary-card">
+                      <div className="admin-card-title">Content trust</div>
+                      <div className="admin-card-value">{activeAnns.length} announcements</div>
+                      <div className="admin-card-meta">{taken.length} taken units need verification</div>
+                    </div>
+                  </div>
+                  <div className="admin-quick-actions">
+                    <button className="bboost" onClick={()=>setAdTab("post")}>➕ Create Listing</button>
+                    <button className="bapp" onClick={()=>setAdTab("pending")}>⏳ Review Pending</button>
+                    <button className="bban" onClick={()=>setAdTab("flagged")}>🚩 Review Flagged</button>
+                  </div>
                   <div className="akpis">
                     <div className="akpi"><div className="akpi-icon">🏠</div><div className="akpi-val">{props.length}</div><div className="akpi-lbl">Total Listings</div></div>
                     <div className="akpi"><div className="akpi-icon">✓</div><div className="akpi-val grn">{props.filter(p=>p.status==="available").length}</div><div className="akpi-lbl">Available</div></div>
@@ -868,7 +957,9 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
                       ))}
                     </div>
                   </div>
-                  <button className="bp" style={{background:"linear-gradient(135deg,#C4991A,#e8a800)",boxShadow:"0 3px 14px rgba(196,153,26,0.3)",marginBottom:"1.5rem"}} onClick={postAnn}>📢 Publish Announcement</button>
+                  <button className="bp" style={{background:"linear-gradient(135deg,#C4991A,#e8a800)",boxShadow:"0 3px 14px rgba(196,153,26,0.3)",marginBottom:"1.5rem"}} onClick={postAnn} disabled={annLoading}>
+                    {annLoading ? "Publishing…" : "📢 Publish Announcement"}
+                  </button>
                   <div className="divlbl"><span style={{color:"#C4991A"}}>Active ({activeAnns.length})</span></div>
                   {anns.length===0 && <div className="empty-adm"><p>No announcements yet.</p></div>}
                   {anns.map(a=>(
@@ -913,7 +1004,9 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
                       </div>
                     ))}</div>}
                   </div>
-                  <button className="bp" style={{background:"linear-gradient(135deg,#C4991A,#e8a800)",boxShadow:"0 3px 14px rgba(196,153,26,0.3)",width:"100%",padding:"12px"}} onClick={adminPostListing}>🏠 Post & Auto-Boost →</button>
+                  <button className="bp" style={{background:"linear-gradient(135deg,#C4991A,#e8a800)",boxShadow:"0 3px 14px rgba(196,153,26,0.3)",width:"100%",padding:"12px"}} onClick={adminPostListing} disabled={adminListingLoading}>
+                    {adminListingLoading ? "Posting…" : "🏠 Post & Auto-Boost →"}
+                  </button>
                 </div>}
 
                 {/* SETTINGS */}
@@ -1033,20 +1126,58 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
       {authModal && (
         <div className="mov" onClick={e=>e.target===e.currentTarget&&setAuthModal(null)}>
           <div className="mdl auth">
-            <button className="mclose" style={{position:"static",float:"right",marginBottom:"1rem"}} onClick={()=>setAuthModal(null)}>✕</button>
-            <h2 style={{fontFamily:"Cormorant Garamond,serif",fontSize:"1.75rem",fontWeight:700,marginBottom:"0.25rem"}}>{authModal==="admin"?"Admin Login":authModal==="landlord"?"Landlord Portal":"Tenant Portal"}</h2>
-            <p style={{color:"#bbb",fontSize:"0.78rem",marginBottom:"1.3rem",lineHeight:1.55}}>{authModal==="admin"?"Restricted — administrators only.":authModal==="landlord"?"Free to join. List properties, upload media, add social links.":"Free to join. Browse all listings. Pay KSh "+settings.unlockFee+" to unlock contacts."}</p>
-            {authModal!=="admin" && <div className="auth-tabs">
-              <button className={`at${authF.mode==="login"?" on":""}`} onClick={()=>{setAuthF({...authF,mode:"login"});setAuthErr("");}}>Sign In</button>
-              <button className={`at${authF.mode==="register"?" on":""}`} onClick={()=>{setAuthF({...authF,mode:"register"});setAuthErr("");}}>Sign Up Free</button>
-            </div>}
+            <button className="mclose" aria-label="Close authentication" onClick={()=>setAuthModal(null)}>✕</button>
+            <div className="auth-head">
+              <div className="auth-icon">{authModal==="admin"?"🔐":authModal==="landlord"?"🏠":"👤"}</div>
+              <div>
+                <h2 className="auth-title">{authModal==="admin"?"Admin Access":authModal==="landlord"?"Landlord Portal":"Tenant Portal"}</h2>
+                <p className="auth-subtitle">
+                  {authModal==="admin"
+                    ? "Restricted access for administrators only."
+                    : authModal==="landlord"
+                    ? "Join free to list properties, manage bookings and share your space."
+                    : `Browse verified homes and unlock landlord contacts for KSh ${settings.unlockFee}.`}
+                </p>
+              </div>
+            </div>
+            {authModal!=="admin" && (
+              <div className="auth-tabs">
+                <button className={`at${authF.mode==="login"?" on":""}`} onClick={()=>{setAuthF({...authF,mode:"login"});setAuthErr("");}}>Sign In</button>
+                <button className={`at${authF.mode==="register"?" on":""}`} onClick={()=>{setAuthF({...authF,mode:"register"});setAuthErr("");}}>Sign Up Free</button>
+              </div>
+            )}
             {authErr && <div className="aerr">⚠️ {authErr}</div>}
-            {authF.mode==="register" && authModal!=="admin" && <div className="fg"><label>Full Name</label><input placeholder="Grace Wanjiku" value={authF.name} onChange={e=>setAuthF({...authF,name:e.target.value})}/></div>}
-            <div className="fg"><label>{authModal==="admin"?"Username":"Email"}</label><input type={authModal==="admin"?"text":"email"} placeholder={authModal==="admin"?"admin":"you@example.com"} value={authF.email} onChange={e=>setAuthF({...authF,email:e.target.value})}/></div>
-            <div className="fg"><label>Password</label><input type="password" placeholder="••••••••" value={authF.password} onChange={e=>setAuthF({...authF,password:e.target.value})}/></div>
-            <button className="bp" style={{width:"100%",padding:"12px"}} onClick={()=>authF.mode==="register"?doRegister(authModal):doLogin(authModal)}>{authF.mode==="register"?"Create Free Account →":"Sign In →"}</button>
-            <p style={{fontSize:"0.7rem",color:"#bbb",textAlign:"center",marginTop:"0.9rem"}}>
-              {authModal==="admin"?"Demo: username <admin> · password <admin2024>":authModal==="landlord"?"Demo: grace@mail.com / grace123":"Demo: amina@mail.com / amina123"}
+            {authF.mode==="register" && authModal!=="admin" && (
+              <div className="fg">
+                <label>Full Name</label>
+                <input placeholder="Grace Wanjiku" value={authF.name} onChange={e=>setAuthF({...authF,name:e.target.value})} disabled={authLoading} />
+              </div>
+            )}
+            <div className="fg">
+              <label>{authModal==="admin"?"Username":"Email"}</label>
+              <input type={authModal==="admin"?"text":"email"} placeholder={authModal==="admin"?"admin":"you@example.com"} value={authF.email} onChange={e=>setAuthF({...authF,email:e.target.value})} disabled={authLoading} />
+            </div>
+            <div className="fg">
+              <label>Password</label>
+              <input type="password" placeholder="••••••••" value={authF.password} onChange={e=>setAuthF({...authF,password:e.target.value})} disabled={authLoading} />
+            </div>
+            <button className="bp auth-submit" onClick={()=>authF.mode==="register"?doRegister(authModal):doLogin(authModal)} disabled={authLoading} aria-busy={authLoading}>
+              {authLoading ? (authF.mode==="register" ? "Creating account…" : "Signing in…") : authF.mode==="register" ? "Create Free Account →" : "Sign In →"}
+            </button>
+            {authModal!=="admin" && (
+              <p className="auth-switch">
+                {authF.mode==="login" ? "New to HouseHunt?" : "Already have an account?"}
+                <button type="button" className="auth-switch-btn" onClick={()=>{setAuthF({...authF,mode: authF.mode==="login"?"register":"login"});setAuthErr("");}}>
+                  {authF.mode==="login" ? "Create one" : "Sign in"}
+                </button>
+              </p>
+            )}
+            <p className="auth-demo">
+              {authModal==="admin"
+                ? "Demo: username <admin> · password <admin2024>"
+                : authModal==="landlord"
+                ? "Demo: grace@mail.com / grace123"
+                : "Demo: amina@mail.com / amina123"}
             </p>
           </div>
         </div>
@@ -1064,7 +1195,7 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
             <div style={{background:"rgba(0,166,81,0.07)",border:"1px solid rgba(0,166,81,0.2)",borderRadius:9,padding:"1rem",margin:"1.1rem 0"}}>
               <p style={{fontSize:"0.78rem",color:"#555",lineHeight:1.65}}><strong style={{color:"#007A3D"}}>M-PESA</strong><br/>Paybill: <strong>522522</strong> · Account: <strong>HOUSEHUNT</strong><br/>Amount: <strong>{payModal.type==="boost"?KES(settings.boostFee):KES(settings.unlockFee)}</strong></p>
             </div>
-            <button className="mpesabtn" onClick={simulatePay}>✓ Confirm M-PESA Payment</button>
+            <button className="mpesabtn" onClick={simulatePay} disabled={payLoading} aria-busy={payLoading}>{payLoading ? "Processing payment…" : "✓ Confirm M-PESA Payment"}</button>
             <p className="paynote">Demo simulation. In production, an M-PESA STK push will be sent to your registered phone number.</p>
           </div>
         </div>
