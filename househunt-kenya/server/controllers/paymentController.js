@@ -9,7 +9,8 @@ function handleError(res, err) {
     return sendResponse(res, err.status || 400, false, err.message || 'Request failed', null, err.errors);
   }
 
-  return sendResponse(res, err?.status || 500, false, err?.message || 'Internal Server Error', null, []);
+  const status = err?.status || 500;
+  return sendResponse(res, status, false, status >= 500 ? 'Internal Server Error' : (err?.message || 'Request failed'), null, []);
 }
 
 export async function createPayment(req, res) {

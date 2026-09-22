@@ -5,6 +5,8 @@ export default function PropertyGrid({
   onView,
   user,
   onDel,
+  favorites = [],
+  onToggleFavorite,
   className = "pgrid",
   emptyState = null,
 }) {
@@ -21,6 +23,8 @@ export default function PropertyGrid({
           onView={onView}
           user={user}
           onDel={onDel}
+          isFavorite={favorites.includes(property.id)}
+          onToggleFavorite={onToggleFavorite}
         />
       ))}
     </div>

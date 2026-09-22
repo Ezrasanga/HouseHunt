@@ -22,7 +22,7 @@ test('createPayment creates a pending payment for own approved booking', async (
     landlord: 'landlord-1',
     status: 'APPROVED',
     paymentStatus: 'UNPAID',
-    property: { owner: 'landlord-1' },
+    property: { owner: 'landlord-1', price: 5000 },
   };
 
   Payment.findOne = async () => null;
@@ -42,7 +42,6 @@ test('createPayment creates a pending payment for own approved booking', async (
 
   const result = await paymentService.createPayment(user, {
     bookingId: '507f191e810c19729de860ea',
-    amount: 5000,
     currency: 'KES',
     method: 'MPESA',
     phone: '+254700000000',
@@ -57,6 +56,38 @@ test('createPayment creates a pending payment for own approved booking', async (
   assert.equal(created[0].method, 'MPESA');
   assert.equal(created[0].status, 'PENDING');
   assert.equal(booking.paymentStatus, 'UNPAID');
+});
+
+test('createPayment rejects an amount that differs from the booking balance', async () => {
+  const booking = {
+    _id: '507f191e810c19729de860ea',
+    tenant: 'tenant-1',
+    landlord: 'landlord-1',
+    status: 'APPROVED',
+    paymentStatus: 'UNPAID',
+    property: { owner: 'landlord-1', price: 5000 },
+  };
+  Booking.findById = () => ({
+    populate: () => ({
+      then: (resolve) => resolve(booking),
+      catch: () => {},
+    }),
+    then: (resolve) => resolve(booking),
+    catch: () => {},
+  });
+
+  await assert.rejects(async () => {
+    await paymentService.createPayment({ id: 'tenant-1', role: 'TENANT' }, {
+      bookingId: '507f191e810c19729de860ea',
+      amount: 1,
+      currency: 'KES',
+      method: 'MPESA',
+    });
+  }, (err) => {
+    assert.equal(err.status, 400);
+    assert.equal(err.message, 'Payment amount must match the amount due');
+    return true;
+  });
 });
 
 test('createPayment rejects when tenant does not own the booking', async () => {
@@ -133,6 +164,21 @@ test('createPayment rejects unauthenticated access', async () => {
   }, (err) => {
     assert.equal(err.status, 401);
     assert.equal(err.message, 'Authentication required');
+    return true;
+  });
+});
+
+test('createPayment rejects non-numeric amounts', async () => {
+  await assert.rejects(async () => {
+    await paymentService.createPayment({ id: 'tenant-1', role: 'TENANT' }, {
+      bookingId: '507f191e810c19729de860ea',
+      amount: 'not-a-number',
+      currency: 'KES',
+      method: 'MPESA',
+    });
+  }, (err) => {
+    assert.equal(err.status, 400);
+    assert.equal(err.message, 'Validation failed');
     return true;
   });
 });

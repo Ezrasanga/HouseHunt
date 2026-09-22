@@ -7,7 +7,16 @@ import { errorHandler } from './middleware/errorHandler.js';
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+	origin(origin, callback) {
+		const allowedOrigins = String(globalThis.process?.env?.CORS_ORIGINS || 'http://localhost:5173')
+			.split(',')
+			.map((value) => value.trim())
+			.filter(Boolean);
+		if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+		return callback(new Error('Origin not allowed by CORS'));
+	},
+}));
 app.use(express.json());
 app.use(morgan('dev'));
 

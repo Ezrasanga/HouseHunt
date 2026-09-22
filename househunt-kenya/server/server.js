@@ -4,12 +4,12 @@ import { dirname, resolve } from 'path';
 import app from './app.js';
 import { connectDB } from './config/db.js';
 
-const env = globalThis.process?.env || {};
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 dotenv.config({ path: resolve(__dirname, '.env') });
+
+const env = globalThis.process?.env || {};
 
 const PORT = env.PORT || 5001;
 

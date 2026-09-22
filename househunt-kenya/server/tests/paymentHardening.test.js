@@ -48,6 +48,62 @@ test('Successful payment becomes SUCCESS and booking PAID', async () => {
   assert.equal(bookingSaved.paymentStatus, 'PAID');
 });
 
+test('Successful callback without provider metadata does not mark payment paid', async () => {
+  let saved = false;
+  const payment = { _id: 'p-missing-meta', booking: 'b-missing-meta', merchantRequestId: 'mr-missing-meta', checkoutRequestId: 'cr-missing-meta', status: 'PENDING', amount: 1000, phone: '254712345678', save: async function() { saved = true; } };
+  Payment.findOne = async () => payment;
+
+  const res = await paymentService.handleMpesaCallback(makeCallback({
+    merchantRequestId: 'mr-missing-meta',
+    checkoutRequestId: 'cr-missing-meta',
+  }));
+
+  assert.equal(res.message, 'Incomplete callback metadata');
+  assert.equal(payment.status, 'PENDING');
+  assert.equal(saved, false);
+});
+
+test('Successful callback rolls payment back when booking reconciliation fails', async () => {
+  const statuses = [];
+  const payment = { _id: 'p-booking-failure', booking: 'b-booking-failure', merchantRequestId: 'mr-booking-failure', checkoutRequestId: 'cr-booking-failure', status: 'PENDING', amount: 1000, phone: '254712345678', save: async function() { statuses.push(this.status); } };
+  Payment.findOne = async () => payment;
+  Booking.findById = async () => null;
+
+  const res = await paymentService.handleMpesaCallback(makeCallback({
+    merchantRequestId: 'mr-booking-failure',
+    checkoutRequestId: 'cr-booking-failure',
+    items: [
+      { Name: 'Amount', Value: 1000 },
+      { Name: 'MpesaReceiptNumber', Value: 'MPESA-FAILURE' },
+      { Name: 'PhoneNumber', Value: '254712345678' },
+    ],
+  }));
+
+  assert.equal(res.message, 'Booking reconciliation pending');
+  assert.deepEqual(statuses, ['SUCCESS', 'PENDING']);
+  assert.equal(payment.status, 'PENDING');
+});
+
+test('Successful payment updates partial booking balance', async () => {
+  const payment = { _id: 'p-partial', booking: 'b-partial', merchantRequestId: 'mr-partial', checkoutRequestId: 'cr-partial', status: 'PENDING', amount: 1000, phone: '254712345678', save: async function() {} };
+  const booking = { _id: 'b-partial', totalDue: 2000, amountPaid: 0, paymentStatus: 'UNPAID', save: async function() {} };
+  Payment.findOne = async () => payment;
+  Booking.findById = async () => booking;
+
+  await paymentService.handleMpesaCallback(makeCallback({
+    merchantRequestId: 'mr-partial',
+    checkoutRequestId: 'cr-partial',
+    items: [
+      { Name: 'Amount', Value: 1000 },
+      { Name: 'MpesaReceiptNumber', Value: 'MPESA-PARTIAL' },
+      { Name: 'PhoneNumber', Value: '254712345678' },
+    ],
+  }));
+
+  assert.equal(booking.amountPaid, 1000);
+  assert.equal(booking.paymentStatus, 'PARTIAL');
+});
+
 test('Failed Daraja callback becomes FAILED and booking is not paid', async () => {
   let bookingSaved = null;
   const payment = { _id: 'p2', tenant: 't1', booking: 'b2', merchantRequestId: 'mr-2', checkoutRequestId: 'cr-2', status: 'PENDING', amount: 500, currency: 'KES', phone: '254712345678', save: async function() {} };

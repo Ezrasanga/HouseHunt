@@ -415,6 +415,12 @@ export async function approveBooking(id, actor) {
     throw error;
   }
 
+  if (!Number.isFinite(Number(property.price)) || Number(property.price) <= 0) {
+    const error = new Error('Property has invalid rental pricing');
+    error.status = 400;
+    throw error;
+  }
+
   const conflictingBooking = await Booking.findOne({
     property: property._id,
     status: 'APPROVED',
@@ -428,6 +434,10 @@ export async function approveBooking(id, actor) {
   }
 
   booking.status = 'APPROVED';
+  booking.monthlyRent = Number(property.price);
+  booking.totalDue = Number(property.price);
+  booking.amountPaid = 0;
+  booking.currency = 'KES';
   await booking.save();
 
   property.status = 'OCCUPIED';

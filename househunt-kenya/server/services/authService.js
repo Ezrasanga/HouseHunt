@@ -20,12 +20,13 @@ export async function registerUser(payload) {
     throw error;
   }
 
-  const normalizedRole = normalizeRole(role);
-  if (normalizedRole === 'ADMIN') {
+  if (String(role || '').toUpperCase() === 'ADMIN') {
     const error = new Error('Admin accounts cannot be created through the public API');
     error.status = 403;
     throw error;
   }
+
+  const normalizedRole = normalizeRole(role);
 
   const existingUser = await User.findOne({ email: email.toLowerCase() });
   if (existingUser) {

@@ -44,12 +44,12 @@ export async function authenticate(req, res, next) {
 
     req.user = user.toJSON();
     return next();
-  } catch (error) {
+  } catch {
     return res.status(401).json({
       success: false,
       message: 'Invalid or expired token',
       data: null,
-      errors: [{ field: 'token', message: error.message || 'Token verification failed' }],
+      errors: [{ field: 'token', message: 'Token verification failed' }],
     });
   }
 }

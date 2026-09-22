@@ -29,6 +29,28 @@ const bookingSchema = new mongoose.Schema(
       required: [true, 'Lease duration is required'],
       min: [1, 'Lease duration must be at least 1 month'],
     },
+    monthlyRent: {
+      type: Number,
+      min: [0, 'Monthly rent cannot be negative'],
+      default: null,
+    },
+    totalDue: {
+      type: Number,
+      min: [0, 'Total amount due cannot be negative'],
+      default: null,
+    },
+    amountPaid: {
+      type: Number,
+      min: [0, 'Amount paid cannot be negative'],
+      default: 0,
+    },
+    currency: {
+      type: String,
+      enum: ['KES', 'USD', 'EUR'],
+      default: 'KES',
+      uppercase: true,
+      trim: true,
+    },
     status: {
       type: String,
       enum: ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'COMPLETED'],

@@ -90,6 +90,17 @@ export async function handleMpesaCallback(payload = {}) {
     return { success: true, message: 'Phone mismatch' };
   }
 
+  if (resultCode === 0) {
+    if (!merchantRequestId || !payment.merchantRequestId || String(merchantRequestId) !== String(payment.merchantRequestId)) {
+      console.warn('MPESA callback: missing or mismatched merchantRequestId for', checkoutRequestId);
+      return { success: true, message: 'Merchant request mismatch' };
+    }
+    if (!mpesaReceipt || amount == null || (payment.phone && !phone)) {
+      console.warn('MPESA callback: incomplete success metadata for', checkoutRequestId);
+      return { success: true, message: 'Incomplete callback metadata' };
+    }
+  }
+
   if (resultCode !== 0) {
     payment.merchantRequestId = merchantRequestId || payment.merchantRequestId;
     payment.checkoutRequestId = checkoutRequestId || payment.checkoutRequestId;
@@ -112,7 +123,12 @@ export async function handleMpesaCallback(payload = {}) {
   payment.status = 'SUCCESS';
   await payment.save();
 
-  await ensureBookingPaid(payment);
+  const bookingPaid = await ensureBookingPaid(payment);
+  if (!bookingPaid) {
+    payment.status = 'PENDING';
+    await payment.save();
+    return { success: true, message: 'Booking reconciliation pending' };
+  }
 
   return { success: true, message: 'Payment reconciled' };
 }
@@ -163,16 +179,19 @@ function isAmountEqual(a, b) {
 async function ensureBookingPaid(payment) {
   try {
     const bookingId = payment.booking?._id || payment.booking;
-    if (!bookingId) return;
+    if (!bookingId) return false;
     const booking = await Booking.findById(bookingId);
-    if (!booking) return;
-    if (String(booking._id) !== String(bookingId)) return;
-    if (booking.paymentStatus !== 'PAID') {
-      booking.paymentStatus = 'PAID';
-      await booking.save();
-    }
+    if (!booking) return false;
+    if (String(booking._id) !== String(bookingId)) return false;
+    const amountPaid = Number(booking.amountPaid || 0) + Number(payment.amount || 0);
+    booking.amountPaid = Number.isFinite(amountPaid) ? amountPaid : booking.amountPaid;
+    const totalDue = Number(booking.totalDue);
+    booking.paymentStatus = Number.isFinite(totalDue) && totalDue > 0 && booking.amountPaid < totalDue ? 'PARTIAL' : 'PAID';
+    await booking.save();
+    return true;
   } catch (e) {
     console.warn('MPESA callback: failed to ensure booking PAID', e && e.message);
+    return false;
   }
 }
 
@@ -229,9 +248,7 @@ function validateCreatePayload(payload = {}) {
     errors.push({ field: 'bookingId', message: 'Booking ID is invalid' });
   }
 
-  if (amount === undefined || amount === null || amount === '') {
-    errors.push({ field: 'amount', message: 'Amount is required' });
-  } else if (typeof Number(amount) !== 'number' || Number(amount) <= 0) {
+  if (amount !== undefined && amount !== null && amount !== '' && (!Number.isFinite(Number(amount)) || Number(amount) <= 0)) {
     errors.push({ field: 'amount', message: 'Amount must be a positive number' });
   }
 
@@ -275,7 +292,7 @@ export async function createPayment(user, payload = {}) {
     throw error;
   }
 
-  const booking = await Booking.findById(payload.bookingId).populate('property', 'owner');
+  const booking = await Booking.findById(payload.bookingId).populate('property', 'owner price');
   if (!booking) {
     const error = new Error('Booking not found');
     error.status = 404;
@@ -300,11 +317,26 @@ export async function createPayment(user, payload = {}) {
     throw error;
   }
 
-  const amount = Number(payload.amount);
-  if (amount <= 0) {
-    const error = new Error('Amount must be a positive number');
+  const totalDue = Number(booking.totalDue ?? booking.property?.price);
+  const amountPaid = Number(booking.amountPaid || 0);
+  const amount = totalDue - amountPaid;
+  if (!Number.isFinite(totalDue) || totalDue <= 0 || !Number.isFinite(amount) || amount <= 0) {
+    const error = new Error('Booking payment terms are not configured');
     error.status = 400;
     error.errors = [{ field: 'amount', message: 'Amount must be greater than 0' }];
+    throw error;
+  }
+
+  if (payload.amount !== undefined && payload.amount !== null && payload.amount !== '' && Number(payload.amount) !== amount) {
+    const error = new Error('Payment amount must match the amount due');
+    error.status = 400;
+    error.errors = [{ field: 'amount', message: `Amount due is ${amount}` }];
+    throw error;
+  }
+
+  if (String(payload.currency).toUpperCase() !== 'KES') {
+    const error = new Error('Currency must be KES for booking payments');
+    error.status = 400;
     throw error;
   }
 
@@ -561,7 +593,7 @@ export async function initiateStkPush(user, paymentId, phoneRaw) {
     throw error;
   }
 
-  if (Number(payment.amount) <= 0) {
+  if (!Number.isFinite(Number(payment.amount)) || Number(payment.amount) <= 0) {
     const error = new Error('Invalid payment amount');
     error.status = 400;
     throw error;

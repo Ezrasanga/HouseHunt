@@ -118,6 +118,10 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
   const [admListF, setAdmListF] = useState({title:"",location:"",rent:"",rooms:"",type:"Apartment",rules:"",tags:""});
   const [admMedia, setAdmMedia] = useState([]);
   const [settings, setSettings] = useState({boostFee:200,unlockFee:100,requireApproval:false});
+  const [favorites, setFavorites] = useState(() => {
+    if (typeof window === "undefined") return [];
+    try { return JSON.parse(window.localStorage.getItem("househunt-favorites") || "[]"); } catch { return []; }
+  });
   const fileRef = useRef();
   const admFileRef = useRef();
   const modalRef = useRef(null);
@@ -138,6 +142,8 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
     else if(budget==="high") mb=p.rent>35000;
     return ms&&mb&&(!ptype||p.type===ptype);
   });
+  const featuredProps = filtered.filter(p=>p.boosted).slice(0,3);
+  const remainingProps = filtered.filter(p=>!p.boosted);
 
   const myProps = user?.role==="landlord" ? props.filter(p=>p.landlordId===user.data.id) : [];
   const myAvailable = myProps.filter(p=>p.status==="available");
@@ -248,6 +254,13 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
   };
 
   const logout = () => { setUser(null); setTab("home"); msg("Signed out.","info"); };
+  const toggleFavorite = id => {
+    setFavorites(current => {
+      const next = current.includes(id) ? current.filter(item => item !== id) : [...current, id];
+      window.localStorage.setItem("househunt-favorites", JSON.stringify(next));
+      return next;
+    });
+  };
 
   // PROPERTY CRUD
   const deleteProp = (id, direct=false) => {
@@ -480,20 +493,34 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
           <div className="stitem"><span className="stnum">12</span><span className="stlbl">Cities</span></div>
         </div>
         <div className="page">
-          <div className="sh"><div className="shey">Featured & Boosted</div><div className="shtt">Top Listings This Week</div></div>
+          <div className="home-search-head">
+            <div className="sh"><div className="shey">Browse homes</div><div className="shtt">Find your next home</div></div>
+            <button className="bghost" onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>
+          </div>
+          <SearchBar search={search} setSearch={setSearch} budget={budget} setBudget={setBudget} ptype={ptype} setPtype={setPtype} />
+          <div className="sh"><div className="shey">Featured & Boosted</div><div className="shtt">Top listings this week</div></div>
           <PropertyGrid
-            properties={sorted.filter(p=>p.boosted).slice(0,3)}
+            properties={featuredProps}
             onView={openProperty}
             user={user}
             onDel={deleteProp}
+            favorites={favorites}
+            onToggleFavorite={toggleFavorite}
           />
+          <div className="home-results-head">
+            <div className="sh"><div className="shey">More listings</div><div className="shtt">Homes matching your search</div></div>
+            <span className="result-count">{filtered.length} {filtered.length === 1 ? "home" : "homes"}</span>
+          </div>
+          {remainingProps.length === 0
+            ? <div className="noresult"><h3>{filtered.length === 0 ? "No listings found" : "You are viewing all matching featured listings"}</h3><p>{filtered.length === 0 ? "Try adjusting your filters or clear the search to see all available homes." : "Try another search to discover more homes."}</p>{filtered.length === 0 && <button onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>}</div>
+            : <PropertyGrid properties={remainingProps} onView={openProperty} user={user} onDel={deleteProp} favorites={favorites} onToggleFavorite={toggleFavorite} />}
         </div>
       </>}
 
       {/* ─── TENANT BROWSE ─── */}
       {activeTab==="tenant" && (
         <div className="page">
-          {!user && <div className="guestbanner"><p><strong>🔒 Guest mode.</strong> Contacts & locations are hidden. Login free to browse.</p><button className="bp" style={{fontSize:"0.78rem",padding:"7px 16px"}} onClick={()=>setAuthModal("tenant")}>Login / Sign Up Free</button></div>}
+          {!user && <div className="guestbanner"><p><strong>🔓 Guest browsing.</strong> Browse homes freely. Login only when you want to unlock landlord contacts.</p><button className="bp" style={{fontSize:"0.78rem",padding:"7px 16px"}} onClick={()=>setAuthModal("tenant")}>Login / Sign Up Free</button></div>}
           {user && (
             <>
               <div className="thdr">
@@ -580,6 +607,8 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
                 onView={openProperty}
                 user={user}
                 onDel={deleteProp}
+                favorites={favorites}
+                onToggleFavorite={toggleFavorite}
               />}
         </div>
       )}
