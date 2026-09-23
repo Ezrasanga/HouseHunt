@@ -59,7 +59,7 @@ export default function PropertyDetails({ liveProp, landlord, user, isUnlocked, 
 
         <aside className="pd-right">
           <div className="pd-action-panel">
-            <button className="bp" type="button" onClick={closeModal}>← Back to listings</button>
+            <button className="bp detail-back" type="button" onClick={closeModal}>← Back to listings</button>
             {!user && <button className="bghost" type="button" onClick={() => { closeModal(); setAuthModal("tenant"); }}>Login to unlock</button>}
           </div>
 

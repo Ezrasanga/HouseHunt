@@ -25,6 +25,10 @@ api.interceptors.response.use(
 	error => {
 		const payload = error.response?.data;
 
+		if (error.response?.status === 401 && window.localStorage.getItem("token")) {
+			window.dispatchEvent(new CustomEvent("househunt:session-expired"));
+		}
+
 		if (payload && typeof payload === "object") {
 			error.apiErrors = payload.errors;
 			if (payload.message) {

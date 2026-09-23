@@ -30,6 +30,12 @@ function errorMessage(error) {
 	return details.length ? `${message}: ${details.join(", ")}` : message;
 }
 
+function authenticationError(error, fallback) {
+	const nextError = new Error(errorMessage(error) || fallback, { cause: error });
+	nextError.fieldErrors = error.response?.data?.errors || error.apiErrors || [];
+	return nextError;
+}
+
 export function AuthProvider({ children }) {
 	const [user, setUser] = useState(() => readStoredUser());
 	const [isRestoring, setIsRestoring] = useState(() => Boolean(window.localStorage.getItem(TOKEN_KEY)));
@@ -58,8 +64,11 @@ export function AuthProvider({ children }) {
 	};
 
 	useEffect(() => {
+		const handleSessionExpired = () => clearSession();
+		window.addEventListener("househunt:session-expired", handleSessionExpired);
+
 		if (!window.localStorage.getItem(TOKEN_KEY)) {
-			return undefined;
+			return () => window.removeEventListener("househunt:session-expired", handleSessionExpired);
 		}
 
 		let active = true;
@@ -77,7 +86,10 @@ export function AuthProvider({ children }) {
 				if (active) setIsRestoring(false);
 			});
 
-		return () => { active = false; };
+		return () => {
+			active = false;
+			window.removeEventListener("househunt:session-expired", handleSessionExpired);
+		};
 	}, []);
 
 	const login = async payload => {
@@ -90,7 +102,7 @@ export function AuthProvider({ children }) {
 			if (!response.data.success) throw new Error(response.data.message || "Login failed.");
 			return saveSession(response.data.data);
 		} catch (error) {
-			throw new Error(errorMessage(error), { cause: error });
+			throw authenticationError(error, "Login failed.");
 		} finally {
 			setIsLoading(false);
 		}
@@ -106,7 +118,7 @@ export function AuthProvider({ children }) {
 			if (!response.data.success) throw new Error(response.data.message || "Registration failed.");
 			return saveSession(response.data.data);
 		} catch (error) {
-			throw new Error(errorMessage(error), { cause: error });
+			throw authenticationError(error, "Registration failed.");
 		} finally {
 			setIsLoading(false);
 		}

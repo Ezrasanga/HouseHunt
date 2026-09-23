@@ -48,6 +48,15 @@ const propertyPayload = (form, media) => {
   };
 };
 
+function PropertySkeletons() {
+  return <div className="pgrid" aria-label="Loading properties" aria-busy="true">
+    {[1, 2, 3].map(item => <div className="pcard skeleton-card" key={item}>
+      <div className="skeleton-block skeleton-thumb" />
+      <div className="skeleton-copy"><div className="skeleton-line wide" /><div className="skeleton-line" /><div className="skeleton-line short" /></div>
+    </div>)}
+  </div>;
+}
+
 const SEED_LANDLORDS = [
   {id:"L001",name:"Grace Wanjiku",email:"grace@mail.com",password:"grace123",phone:"+254 712 345 678",whatsapp:"+254712345678",ig:"grace_homes",fb:"GraceHomes",tt:"grace_ke",tw:"GraceHomes",banned:false,joined:"2024-01-05"},
   {id:"L002",name:"John Kamau",email:"john@mail.com",password:"john123",phone:"+254 720 111 222",whatsapp:"+254720111222",ig:"",fb:"KilimaniRooms",tt:"",tw:"",banned:false,joined:"2024-01-18"},
@@ -81,6 +90,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     properties: props,
     loading: propertiesLoading,
     error: propertiesError,
+    refresh: refreshProperties,
     loadProperty,
     addProperty,
     removeProperty,
@@ -113,6 +123,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [cwarn, setCwarn] = useState(false);
   const [authF, setAuthF] = useState({name:"",email:"",password:"",mode:authMode ?? "login"});
   const [authErr, setAuthErr] = useState("");
+  const [authFieldErrors, setAuthFieldErrors] = useState({});
+  const [showPassword, setShowPassword] = useState(false);
   const [formError, setFormError] = useState("");
   const [formInvalid, setFormInvalid] = useState({});
   const [propLoading, setPropLoading] = useState(false);
@@ -131,6 +143,35 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const fileRef = useRef();
   const admFileRef = useRef();
   const modalRef = useRef(null);
+  const authNameRef = useRef(null);
+  const authEmailRef = useRef(null);
+  const authPasswordRef = useRef(null);
+
+  useEffect(() => {
+    if (!authModal && !payModal && !confModal) return undefined;
+    const previousFocus = document.activeElement;
+    const modal = modalRef.current;
+    modal?.focus();
+    const handleKeyDown = event => {
+      if (event.key === "Escape") {
+        setAuthModal(null);
+        setPayModal(null);
+        setConfModal(null);
+      }
+      if (event.key !== "Tab" || !modal) return;
+      const focusable = modal.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])");
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      previousFocus?.focus?.();
+    };
+  }, [authModal, confModal, payModal]);
 
   useEffect(() => {
     if (!propertyId) return undefined;
@@ -154,6 +195,12 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
   const addLog = (action, detail, kind="info") => setLog(l=>[{id:Date.now(),time:nowStr(),action,detail,kind},...l.slice(0,49)]);
   const msg = (m, k="ok") => { setToast({m,k}); setTimeout(()=>setToast(null),3000); };
+  const validateAuth = () => {
+    if (authF.mode === "register" && !authF.name.trim()) { authNameRef.current?.focus(); return "Full name is required."; }
+    if (!authF.email || !/^\S+@\S+\.\S+$/.test(authF.email)) { authEmailRef.current?.focus(); return "Enter a valid email address."; }
+    if (!authF.password || authF.password.length < 8) { authPasswordRef.current?.focus(); return "Password must be at least 8 characters."; }
+    return "";
+  };
 
   const sorted = [...props]
     .filter(p => user?.role==="admin" ? true : p.approved!==false)
@@ -189,8 +236,10 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   // AUTH
   const doLogin = async role => {
     setAuthErr("");
-    if (!authF.email || !authF.password) {
-      setAuthErr("Email and password are required.");
+    setAuthFieldErrors({});
+    const validationError = validateAuth();
+    if (validationError) {
+      setAuthErr(validationError);
       return;
     }
 
@@ -206,13 +255,16 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       addLog("User login", `${nextUser.data.name} (${nextUser.role})`, "info");
     } catch (err) {
       setAuthErr(err.message || "Login failed.");
+      setAuthFieldErrors(Object.fromEntries((err.fieldErrors || []).map(item => [item.field, item.message])));
     }
   };
 
   const doRegister = async role => {
     setAuthErr("");
-    if (!authF.name || !authF.email || !authF.password) {
-      setAuthErr("All fields are required.");
+    setAuthFieldErrors({});
+    const validationError = validateAuth();
+    if (validationError) {
+      setAuthErr(validationError);
       return;
     }
     if (dirty(authF.name)) {
@@ -241,6 +293,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       msg("Account created! Welcome 🎉", "ok");
     } catch (err) {
       setAuthErr(err.message || "Registration failed.");
+      setAuthFieldErrors(Object.fromEntries((err.fieldErrors || []).map(item => [item.field, item.message])));
     }
   };
 
@@ -497,7 +550,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       {propertiesError && (
         <div className="form-error" role="alert" style={{ margin: "1rem auto", maxWidth: 920 }}>
           Unable to load properties: {propertiesError}
-          <button type="button" className="bghost" style={{ marginLeft: "0.75rem" }} onClick={() => window.location.reload()}>Retry</button>
+          <button type="button" className="bghost" style={{ marginLeft: "0.75rem" }} onClick={() => refreshProperties()}>Retry</button>
         </div>
       )}
       {propertyId && !propertiesLoading && !liveProp && !propertiesError && (
@@ -510,7 +563,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         <div className="statsbar">
           <div className="stitem"><span className="stnum">{props.filter(p=>p.approved!==false).length}+</span><span className="stlbl">Listings</span></div>
           <div className="stitem"><span className="stnum">{props.filter(p=>p.status==="available"&&p.approved!==false).length}</span><span className="stlbl">Available</span></div>
-          <div className="stitem"><span className="stnum">{landlords.length}</span><span className="stlbl">Landlords</span></div>
+          <div className="stitem"><span className="stnum">—</span><span className="stlbl">Landlords</span></div>
           <div className="stitem"><span className="stnum">12</span><span className="stlbl">Cities</span></div>
         </div>
         <div className="page">
@@ -519,7 +572,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             <button className="bghost" onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>
           </div>
           <SearchBar search={search} setSearch={setSearch} budget={budget} setBudget={setBudget} ptype={ptype} setPtype={setPtype} />
-          {propertiesLoading && <p role="status" style={{ padding: "1rem 0", color: "#888" }}>Loading properties…</p>}
+          {propertiesLoading && <PropertySkeletons />}
           {!propertiesLoading && !propertiesError && <>
             <div className="sh"><div className="shey">Featured & Boosted</div><div className="shtt">Top listings this week</div></div>
             <PropertyGrid properties={featuredProps} onView={openProperty} user={user} onDel={deleteProp} favorites={favorites} onToggleFavorite={toggleFavorite} />
@@ -597,8 +650,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 <div className="tactivity">
                   <div className="tactivity-head">
                     <div>
-                      <h3>Recent activity</h3>
-                      <p>Track your latest tenant actions and unlock history.</p>
+                      <h3>Local activity</h3>
+                      <p>Recent activity from this browser. Account activity will appear here in a future integration.</p>
                     </div>
                   </div>
                   {tenantActivity.map(a=>(
@@ -618,11 +671,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
           <div className="sh"><div className="shey">Browse listings</div><div className="shtt">Find Your Home</div></div>
           <SearchBar search={search} setSearch={setSearch} budget={budget} setBudget={setBudget} ptype={ptype} setPtype={setPtype} />
           {propertiesLoading
-            ? <p role="status" style={{ padding: "1rem 0", color: "#888" }}>Loading tenant properties…</p>
+            ? <PropertySkeletons />
             : propertiesError
             ? <div className="form-error" role="alert">Unable to load tenant properties: {propertiesError}</div>
             : filtered.length===0
-            ? <div className="noresult"><h3>No listings found</h3><p>Try adjusting your filters or clear the search to see all available homes.</p><button onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button></div>
+            ? <div className="noresult"><h3>No listings found</h3><p>There are no homes matching these filters right now.</p><div className="empty-actions"><button onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button><button onClick={() => { setSearch(""); setBudget(""); setPtype(""); setTab("home"); }}>Browse all homes</button></div></div>
             : <PropertyGrid
                 properties={filtered}
                 onView={openProperty}
@@ -681,8 +734,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 <h3>Contact & Social Media</h3><p className="sub">Shown on listings so tenants can reach you directly.</p>
                 <div className="divlbl"><span>📞 Phone Numbers</span></div>
                 <div className="frow">
-                  <div className="fg"><label>Primary Phone</label><div className="inpw"><span className="inpx">🇰🇪</span><input placeholder="+254 712 345 678" value={user.data.phone||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,phone:e.target.value}}))} /></div></div>
-                  <div className="fg"><label>WhatsApp</label><div className="inpw"><span className="inpx">💬</span><input placeholder="+254712345678" value={user.data.whatsapp||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,whatsapp:e.target.value}}))} /></div></div>
+                  <div className="fg"><label>Primary Phone</label><div className="inpw"><span className="inpx">🇰🇪</span><input placeholder="e.g. +254 700 000 000" value={user.data.phone||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,phone:e.target.value}}))} /></div></div>
+                  <div className="fg"><label>WhatsApp</label><div className="inpw"><span className="inpx">💬</span><input placeholder="e.g. +254 700 000 000" value={user.data.whatsapp||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,whatsapp:e.target.value}}))} /></div></div>
                 </div>
                 <div className="fg"><label>Email</label><div className="inpw"><span className="inpx">✉️</span><input type="email" placeholder="you@example.com" value={user.data.email||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,email:e.target.value}}))} /></div></div>
                 <div className="divlbl"><span>📱 Social Media</span></div>
@@ -1137,8 +1190,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                   ? <video src={liveProp.media[midx].url} autoPlay muted loop playsInline preload="metadata" alt={liveProp.title} />
                   : <img src={liveProp.media[midx].url} alt={liveProp.title} />
               ) : (
-                <div className="mhero-empty" aria-label={liveProp.title}>
-                  <span>{liveProp.initials}</span>
+                <div className="mhero-empty" aria-label={`${liveProp.title} image unavailable`}>
+                  <span className="fallback-mark">⌂</span><strong>{liveProp.initials}</strong><small>Image coming soon</small>
                 </div>
               )}
               <div className="mhero-ov" />
@@ -1174,13 +1227,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
       {/* ─── AUTH MODAL ─── */}
       {authModal && (
-        <div className="mov" onClick={e=>e.target===e.currentTarget&&setAuthModal(null)}>
-          <div className="mdl auth">
+        <div className="mov" role="presentation" onClick={e=>e.target===e.currentTarget&&setAuthModal(null)}>
+          <div ref={modalRef} className="mdl auth" role="dialog" aria-modal="true" aria-labelledby="auth-title">
             <button className="mclose" aria-label="Close authentication" onClick={()=>setAuthModal(null)}>✕</button>
             <div className="auth-head">
               <div className="auth-icon">{authModal==="admin"?"🔐":authModal==="landlord"?"🏠":"👤"}</div>
               <div>
-                <h2 className="auth-title">{authModal==="admin"?"Admin Access":authModal==="landlord"?"Landlord Portal":"Tenant Portal"}</h2>
+                <h2 id="auth-title" className="auth-title">{authModal==="admin"?"Admin Access":authModal==="landlord"?"Landlord Portal":"Tenant Portal"}</h2>
                 <p className="auth-subtitle">
                   {authModal==="admin"
                     ? "Restricted access for administrators only."
@@ -1192,43 +1245,39 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             </div>
             {authModal!=="admin" && (
               <div className="auth-tabs">
-                <button className={`at${authF.mode==="login"?" on":""}`} onClick={()=>{setAuthF({...authF,mode:"login"});setAuthErr("");}}>Sign In</button>
-                <button className={`at${authF.mode==="register"?" on":""}`} onClick={()=>{setAuthF({...authF,mode:"register"});setAuthErr("");}}>Sign Up Free</button>
+                <button className={`at${authF.mode==="login"?" on":""}`} onClick={()=>{setAuthF({...authF,mode:"login"});setAuthErr("");setAuthFieldErrors({});}}>Sign In</button>
+                <button className={`at${authF.mode==="register"?" on":""}`} onClick={()=>{setAuthF({...authF,mode:"register"});setAuthErr("");setAuthFieldErrors({});}}>Sign Up Free</button>
               </div>
             )}
             {authErr && <div className="aerr">⚠️ {authErr}</div>}
             {authF.mode==="register" && authModal!=="admin" && (
               <div className="fg">
                 <label>Full Name</label>
-                <input placeholder="Grace Wanjiku" value={authF.name} onChange={e=>setAuthF({...authF,name:e.target.value})} disabled={authLoading} />
+                <input ref={authNameRef} maxLength={80} placeholder="e.g. Jane Doe" value={authF.name} onChange={e=>{setAuthF({...authF,name:e.target.value});setAuthFieldErrors(current=>({...current,name:undefined}));}} disabled={authLoading} aria-invalid={Boolean(authFieldErrors.name)} />
+                {authFieldErrors.name && <div className="field-error" role="alert">{authFieldErrors.name}</div>}
               </div>
             )}
-            <div className="fg">
+                  <div className="fg">
               <label>{authModal==="admin"?"Username":"Email"}</label>
-              <input type={authModal==="admin"?"text":"email"} placeholder={authModal==="admin"?"admin":"you@example.com"} value={authF.email} onChange={e=>setAuthF({...authF,email:e.target.value})} disabled={authLoading} />
+              <input ref={authEmailRef} maxLength={120} type={authModal==="admin"?"text":"email"} placeholder={authModal==="admin"?"admin":"you@example.com"} value={authF.email} onChange={e=>{setAuthF({...authF,email:e.target.value});setAuthErr("");setAuthFieldErrors(current=>({...current,email:undefined}));}} disabled={authLoading} aria-invalid={Boolean(authFieldErrors.email || (authErr && !/^\S+@\S+\.\S+$/.test(authF.email)))} />
+              {authFieldErrors.email && <div className="field-error" role="alert">{authFieldErrors.email}</div>}
             </div>
             <div className="fg">
               <label>Password</label>
-              <input type="password" placeholder="••••••••" value={authF.password} onChange={e=>setAuthF({...authF,password:e.target.value})} disabled={authLoading} />
+              <div className="password-field"><input ref={authPasswordRef} maxLength={128} type={showPassword ? "text" : "password"} placeholder="••••••••" value={authF.password} onChange={e=>{setAuthF({...authF,password:e.target.value});setAuthErr("");setAuthFieldErrors(current=>({...current,password:undefined}));}} disabled={authLoading} aria-invalid={Boolean(authFieldErrors.password || (authErr && authF.password.length < 8))} /><button type="button" className="password-toggle" onClick={() => setShowPassword(visible => !visible)} aria-label={showPassword ? "Hide password" : "Show password"} title={showPassword ? "Hide password" : "Show password"}>{showPassword ? "🙈" : "👁"}</button></div>
+              {authFieldErrors.password && <div className="field-error" role="alert">{authFieldErrors.password}</div>}
             </div>
             <button className="bp auth-submit" onClick={()=>authF.mode==="register"?doRegister(authModal):doLogin(authModal)} disabled={authLoading} aria-busy={authLoading}>
-              {authLoading ? (authF.mode==="register" ? "Creating account…" : "Signing in…") : authF.mode==="register" ? "Create Free Account →" : "Sign In →"}
+              {authLoading ? <><span className="button-spinner" aria-hidden="true" /> {authF.mode==="register" ? "Creating account…" : "Signing in…"}</> : authF.mode==="register" ? "Create Free Account →" : "Sign In →"}
             </button>
             {authModal!=="admin" && (
               <p className="auth-switch">
                 {authF.mode==="login" ? "New to HouseHunt?" : "Already have an account?"}
-                <button type="button" className="auth-switch-btn" onClick={()=>{setAuthF({...authF,mode: authF.mode==="login"?"register":"login"});setAuthErr("");}}>
+                  <button type="button" className="auth-switch-btn" onClick={()=>{setAuthF({...authF,mode: authF.mode==="login"?"register":"login"});setAuthErr("");setAuthFieldErrors({});}}>
                   {authF.mode==="login" ? "Create one" : "Sign in"}
                 </button>
               </p>
             )}
-            <p className="auth-demo">
-              {authModal==="admin"
-                ? "Demo: username <admin> · password <admin2024>"
-                : authModal==="landlord"
-                ? "Demo: grace@mail.com / grace123"
-                : "Demo: amina@mail.com / amina123"}
-            </p>
           </div>
         </div>
       )}
@@ -1266,7 +1315,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         </div>
       )}
 
-      {toast && <div className={`toast ${toast.k}`}>{toast.m}</div>}
+      {toast && <div className={`toast ${toast.k}`} role="status" aria-live="polite">{toast.m}</div>}
     </div>
   );
 }

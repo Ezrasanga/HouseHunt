@@ -25,7 +25,7 @@ export default function PropertyCard({ p, onView, user, onDel, isFavorite = fals
       <div className="pbody">
         <div className="ptitle">{p.title}</div>
         <div className="ploc">📍 {p.location}</div>
-        <div className="ptrust"><span className="pverified">✓ Verified listing</span><span className={`pavailability ${p.status === "available" ? "available" : "taken"}`}>{p.status === "available" ? "Available" : "Taken"}</span></div>
+        <div className="ptrust"><span className="pverified">{p.approved ? "✓ Verified listing" : "⏳ Pending approval"}</span><span className={`pavailability ${p.status === "available" ? "available" : "taken"}`}>{p.status === "available" ? "Available" : p.status === "pending" ? "Pending" : "Taken"}</span></div>
         <div className="pmeta">
           <div className="prent">{KES(p.rent)}<sub>/mo</sub></div>
           <div className="prooms">{p.rooms}</div>
@@ -33,8 +33,8 @@ export default function PropertyCard({ p, onView, user, onDel, isFavorite = fals
         <div className="tags">{p.tags.slice(0, 3).map(t => <span key={t} className="tag">{t}</span>)}</div>
         <div className="pfoot">
           <button className="pvbtn" onClick={() => onView(p)}>View Details →</button>
-          <button type="button" className={`pfavbtn${isFavorite ? " saved" : ""}`} onClick={() => onToggleFavorite?.(p.id)} aria-label={isFavorite ? `Remove ${p.title} from saved homes` : `Save ${p.title}`} aria-pressed={isFavorite}>{isFavorite ? "♥" : "♡"}</button>
-          {canDel && <button className="pdbtn" onClick={e => { e.stopPropagation(); onDel(p.id); }}>🗑</button>}
+          <button type="button" title={isFavorite ? "Remove saved home" : "Save home"} className={`pfavbtn${isFavorite ? " saved" : ""}`} onClick={() => onToggleFavorite?.(p.id)} aria-label={isFavorite ? `Remove ${p.title} from saved homes` : `Save ${p.title}`} aria-pressed={isFavorite}>{isFavorite ? "♥" : "♡"}</button>
+          {canDel && <button className="pdbtn" title="Delete property" onClick={e => { e.stopPropagation(); onDel(p.id); }} aria-label={`Delete ${p.title}`}>🗑</button>}
         </div>
       </div>
     </div>
