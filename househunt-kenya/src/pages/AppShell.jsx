@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import useAuth from "../hooks/useAuth";
 import Navbar from "../components/layout/Navbar";
 import Hero from "../components/layout/Hero";
 import SearchBar from "../components/layout/SearchBar";
@@ -7,7 +8,6 @@ import PropertyGrid from "../components/property/PropertyGrid";
 import PropertyGallery from "../components/property/PropertyGallery";
 import PropertyDetails from "../components/property/PropertyDetails";
 import PropertyActions from "../components/property/PropertyActions";
-import { login as loginApi, register as registerApi } from "../services/authService";
 import "../styles/app.css";
 
 // ── MODERATION ────────────────────────────────────────────────────────────────
@@ -16,7 +16,6 @@ const dirty = t => { if(!t) return false; const l=t.toLowerCase(); return BANNED
 const dirtyObj = o => [o.title,o.location,o.rules,o.rooms,...(o.tags||[])].some(dirty);
 
 // ── DATA ──────────────────────────────────────────────────────────────────────
-const ADMIN_CREDS = { user:"admin", pass:"admin2024" };
 const KES = n=>`KSh ${Number(n).toLocaleString()}`;
 const nowStr = ()=>new Date().toLocaleString("en-KE",{hour12:false}).replace(","," ");
 const todayStr = ()=>new Date().toISOString().split("T")[0];
@@ -57,36 +56,14 @@ const SEED_LOG = [
 
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
-export default function AppShell({ user: userProp, setUser: setUserProp, initialTab = "home", authMode = null, propertyId = null }) {
+export default function AppShell({ initialTab = "home", authMode = null, propertyId = null }) {
+  const { user, login, register, updateUser, logout: logoutUser, isLoading: authLoading } = useAuth();
   const [tab, setTab] = useState(initialTab);
   const [props, setProps] = useState(SEED_PROPS);
   const [landlords, setLandlords] = useState(SEED_LANDLORDS);
   const [tenants, setTenants] = useState(SEED_TENANTS);
   const [anns, setAnns] = useState(SEED_ANNOUNCEMENTS);
   const [log, setLog] = useState(SEED_LOG);
-  const [internalUser, setInternalUser] = useState(() => {
-    if (typeof window === "undefined") return null;
-    try {
-      return JSON.parse(window.localStorage.getItem("househunt-user") || "null");
-    } catch {
-      return null;
-    }
-  });
-  const user = userProp ?? internalUser;
-  const setUser = nextUser => {
-    if (setUserProp) {
-      setUserProp(nextUser);
-    } else {
-      setInternalUser(nextUser);
-    }
-    if (typeof window !== "undefined") {
-      if (nextUser) {
-        window.localStorage.setItem("househunt-user", JSON.stringify(nextUser));
-      } else {
-        window.localStorage.removeItem("househunt-user");
-      }
-    }
-  };
   const [toast, setToast] = useState(null);
 
   const initialRouteProp = propertyId && props.length ? props.find(p => String(p.id) === String(propertyId)) : null;
@@ -106,7 +83,6 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
   const [cwarn, setCwarn] = useState(false);
   const [authF, setAuthF] = useState({name:"",email:"",password:"",mode:authMode ?? "login"});
   const [authErr, setAuthErr] = useState("");
-  const [authLoading, setAuthLoading] = useState(false);
   const [formError, setFormError] = useState("");
   const [formInvalid, setFormInvalid] = useState({});
   const [propLoading, setPropLoading] = useState(false);
@@ -163,44 +139,23 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
   // AUTH
   const doLogin = async role => {
     setAuthErr("");
-    if (role === "admin") {
-      if (authF.email === ADMIN_CREDS.user && authF.password === ADMIN_CREDS.pass) {
-        setUser({ role: "admin", data: { name: "Administrator" } });
-        setAuthModal(null);
-        setTab("admin");
-        msg("Welcome, Administrator! 👋", "ok");
-      } else {
-        setAuthErr("Invalid admin credentials.");
-      }
-      return;
-    }
-
     if (!authF.email || !authF.password) {
       setAuthErr("Email and password are required.");
       return;
     }
 
-    setAuthLoading(true);
     try {
-      const payload = { email: authF.email, password: authF.password, role };
-      const { data } = await loginApi(payload);
-
-      if (!data.success) {
-        throw new Error(data.message || "Login failed.");
-      }
-
-      const nextUser = { role: data.user.role, data: data.user };
-      setUser(nextUser);
-      window.localStorage.setItem("househunt-user", JSON.stringify(nextUser));
-      window.localStorage.setItem("token", data.token);
+      const nextUser = await login({
+        email: authF.email,
+        password: authF.password,
+        role: role === "admin" ? undefined : role,
+      });
       setAuthModal(null);
-      setTab(role === "landlord" ? "landlord" : "tenant");
-      msg(`Welcome back, ${data.user.name.split(" ")[0]}!`, "ok");
-      addLog("User login", `${data.user.name} (${role})`, "info");
+      setTab(nextUser.role === "admin" ? "admin" : nextUser.role === "landlord" ? "landlord" : "tenant");
+      msg(`Welcome back, ${nextUser.data.name.split(" ")[0]}!`, "ok");
+      addLog("User login", `${nextUser.data.name} (${nextUser.role})`, "info");
     } catch (err) {
-      setAuthErr(err.response?.data?.message ?? err.message ?? "Login failed.");
-    } finally {
-      setAuthLoading(false);
+      setAuthErr(err.message || "Login failed.");
     }
   };
 
@@ -215,45 +170,31 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
       return;
     }
 
-    setAuthLoading(true);
     try {
-      const payload = {
+      const nextUser = await register({
         name: authF.name,
         email: authF.email,
         password: authF.password,
-        role: role === "landlord" ? "landlord" : "tenant",
-      };
-
-      const { data } = await registerApi(payload);
-
-      if (!data.success) {
-        throw new Error(data.message || "Registration failed.");
-      }
-
-      const nextUser = { role: data.user.role, data: data.user };
-      setUser(nextUser);
-      window.localStorage.setItem("househunt-user", JSON.stringify(nextUser));
-      window.localStorage.setItem("token", data.token);
+        role,
+      });
 
       if (role === "landlord") {
-        setLandlords(l => [...l, data.user]);
-        addLog("Landlord registered", data.user.name, "success");
+        setLandlords(l => [...l, nextUser.data]);
+        addLog("Landlord registered", nextUser.data.name, "success");
       } else {
-        setTenants(t => [...t, data.user]);
-        addLog("Tenant registered", data.user.name, "success");
+        setTenants(t => [...t, nextUser.data]);
+        addLog("Tenant registered", nextUser.data.name, "success");
       }
 
       setAuthModal(null);
-      setTab(role === "landlord" ? "landlord" : "tenant");
+      setTab(nextUser.role === "landlord" ? "landlord" : "tenant");
       msg("Account created! Welcome 🎉", "ok");
     } catch (err) {
-      setAuthErr(err.response?.data?.message ?? err.message ?? "Registration failed.");
-    } finally {
-      setAuthLoading(false);
+      setAuthErr(err.message || "Registration failed.");
     }
   };
 
-  const logout = () => { setUser(null); setTab("home"); msg("Signed out.","info"); };
+  const logout = () => { logoutUser(); setTab("home"); msg("Signed out.","info"); };
   const toggleFavorite = id => {
     setFavorites(current => {
       const next = current.includes(id) ? current.filter(item => item !== id) : [...current, id];
@@ -383,7 +324,7 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
         msg("⭐ Listing boosted to top!","ok");
       } else {
         const nd={...user.data,unlocked:[...(user.data.unlocked||[]),payModal.propId]};
-        setUser({...user,data:nd});
+        updateUser({...user,data:nd});
         setTenants(l=>l.map(t=>t.id===nd.id?nd:t));
         addLog("Contact unlocked",`${nd.name} · ID ${payModal.propId} · KSh ${settings.unlockFee}`,"payment");
         msg("🔓 Contacts & location unlocked!","ok");
@@ -652,7 +593,7 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
             <div>
               {ldTab==="profile" && <div className="fcard">
                 <h3>My Profile</h3><p className="sub">Your public display name on all listings.</p>
-                <div className="fg"><label>Display Name</label><input value={user.data.name} onChange={e=>setUser(u=>({...u,data:{...u.data,name:e.target.value}}))} disabled={profileSaving} /></div>
+                <div className="fg"><label>Display Name</label><input value={user.data.name} onChange={e=>updateUser(u=>({...u,data:{...u.data,name:e.target.value}}))} disabled={profileSaving} /></div>
                 <button className="bp" onClick={saveProfile} disabled={profileSaving} aria-busy={profileSaving}>{profileSaving ? "Saving profile…" : "Save Profile →"}</button>
               </div>}
 
@@ -660,18 +601,18 @@ export default function AppShell({ user: userProp, setUser: setUserProp, initial
                 <h3>Contact & Social Media</h3><p className="sub">Shown on listings so tenants can reach you directly.</p>
                 <div className="divlbl"><span>📞 Phone Numbers</span></div>
                 <div className="frow">
-                  <div className="fg"><label>Primary Phone</label><div className="inpw"><span className="inpx">🇰🇪</span><input placeholder="+254 712 345 678" value={user.data.phone||""} onChange={e=>setUser(u=>({...u,data:{...u.data,phone:e.target.value}}))} /></div></div>
-                  <div className="fg"><label>WhatsApp</label><div className="inpw"><span className="inpx">💬</span><input placeholder="+254712345678" value={user.data.whatsapp||""} onChange={e=>setUser(u=>({...u,data:{...u.data,whatsapp:e.target.value}}))} /></div></div>
+                  <div className="fg"><label>Primary Phone</label><div className="inpw"><span className="inpx">🇰🇪</span><input placeholder="+254 712 345 678" value={user.data.phone||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,phone:e.target.value}}))} /></div></div>
+                  <div className="fg"><label>WhatsApp</label><div className="inpw"><span className="inpx">💬</span><input placeholder="+254712345678" value={user.data.whatsapp||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,whatsapp:e.target.value}}))} /></div></div>
                 </div>
-                <div className="fg"><label>Email</label><div className="inpw"><span className="inpx">✉️</span><input type="email" placeholder="you@example.com" value={user.data.email||""} onChange={e=>setUser(u=>({...u,data:{...u.data,email:e.target.value}}))} /></div></div>
+                <div className="fg"><label>Email</label><div className="inpw"><span className="inpx">✉️</span><input type="email" placeholder="you@example.com" value={user.data.email||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,email:e.target.value}}))} /></div></div>
                 <div className="divlbl"><span>📱 Social Media</span></div>
                 <div className="frow">
-                  <div className="fg"><label>Instagram</label><div className="inpw"><span className="inpx">📸 @</span><input placeholder="handle" value={user.data.ig||""} onChange={e=>setUser(u=>({...u,data:{...u.data,ig:e.target.value}}))} /></div></div>
-                  <div className="fg"><label>Facebook</label><div className="inpw"><span className="inpx">👍</span><input placeholder="page name" value={user.data.fb||""} onChange={e=>setUser(u=>({...u,data:{...u.data,fb:e.target.value}}))} /></div></div>
+                  <div className="fg"><label>Instagram</label><div className="inpw"><span className="inpx">📸 @</span><input placeholder="handle" value={user.data.ig||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,ig:e.target.value}}))} /></div></div>
+                  <div className="fg"><label>Facebook</label><div className="inpw"><span className="inpx">👍</span><input placeholder="page name" value={user.data.fb||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,fb:e.target.value}}))} /></div></div>
                 </div>
                 <div className="frow">
-                  <div className="fg"><label>TikTok</label><div className="inpw"><span className="inpx">🎵 @</span><input placeholder="handle" value={user.data.tt||""} onChange={e=>setUser(u=>({...u,data:{...u.data,tt:e.target.value}}))} /></div></div>
-                  <div className="fg"><label>X / Twitter</label><div className="inpw"><span className="inpx">𝕏 @</span><input placeholder="handle" value={user.data.tw||""} onChange={e=>setUser(u=>({...u,data:{...u.data,tw:e.target.value}}))} /></div></div>
+                  <div className="fg"><label>TikTok</label><div className="inpw"><span className="inpx">🎵 @</span><input placeholder="handle" value={user.data.tt||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,tt:e.target.value}}))} /></div></div>
+                  <div className="fg"><label>X / Twitter</label><div className="inpw"><span className="inpx">𝕏 @</span><input placeholder="handle" value={user.data.tw||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,tw:e.target.value}}))} /></div></div>
                 </div>
                 {(user.data.phone||user.data.ig) && <div className="pprev"><h4>Live Preview</h4>
                   <div className="cchips">

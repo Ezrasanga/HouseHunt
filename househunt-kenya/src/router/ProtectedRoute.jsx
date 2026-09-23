@@ -1,11 +1,10 @@
 import { Navigate } from "react-router-dom";
+import useAuth from "../hooks/useAuth";
 
 export default function ProtectedRoute({ children, allowedRole }) {
-  if (typeof window === "undefined") {
-    return null;
-  }
+  const { user, isRestoring } = useAuth();
 
-  const user = JSON.parse(window.localStorage.getItem("househunt-user") || "null");
+  if (isRestoring) return null;
 
   if (!user || user.role !== allowedRole) {
     return <Navigate to="/login" replace />;
