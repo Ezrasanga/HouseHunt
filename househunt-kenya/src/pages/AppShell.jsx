@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { FiCheckCircle, FiCreditCard, FiPhone } from "react-icons/fi";
 import { useLocation, useNavigate } from "react-router-dom";
 import useAuth from "../hooks/useAuth";
 import useProperties from "../hooks/useProperties";
@@ -146,6 +147,16 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const authNameRef = useRef(null);
   const authEmailRef = useRef(null);
   const authPasswordRef = useRef(null);
+  const previousAuthModal = useRef(authModal);
+
+  useEffect(() => {
+    if (previousAuthModal.current === authModal) return;
+    previousAuthModal.current = authModal;
+    setAuthF({name:"",email:"",password:"",mode:"login"});
+    setAuthErr("");
+    setAuthFieldErrors({});
+    setShowPassword(false);
+  }, [authModal]);
 
   useEffect(() => {
     if (!authModal && !payModal && !confModal) return undefined;
@@ -195,6 +206,12 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
   const addLog = (action, detail, kind="info") => setLog(l=>[{id:Date.now(),time:nowStr(),action,detail,kind},...l.slice(0,49)]);
   const msg = (m, k="ok") => { setToast({m,k}); setTimeout(()=>setToast(null),3000); };
+  const switchAuthMode = mode => {
+    setAuthF({name:"",email:"",password:"",mode});
+    setAuthErr("");
+    setAuthFieldErrors({});
+    setShowPassword(false);
+  };
   const validateAuth = () => {
     if (authF.mode === "register" && !authF.name.trim()) { authNameRef.current?.focus(); return "Full name is required."; }
     if (!authF.email || !/^\S+@\S+\.\S+$/.test(authF.email)) { authEmailRef.current?.focus(); return "Enter a valid email address."; }
@@ -566,17 +583,22 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
           <div className="stitem"><span className="stnum">—</span><span className="stlbl">Landlords</span></div>
           <div className="stitem"><span className="stnum">12</span><span className="stlbl">Cities</span></div>
         </div>
+        <div className="home-trust" aria-label="Why use HouseHunt Kenya">
+          <div className="trust-item"><FiCheckCircle aria-hidden="true" /><div><strong>Verified listings</strong><span>Homes reviewed before they go live</span></div></div>
+          <div className="trust-item"><FiPhone aria-hidden="true" /><div><strong>Direct landlord contact</strong><span>Connect without unnecessary middlemen</span></div></div>
+          <div className="trust-item"><FiCreditCard aria-hidden="true" /><div><strong>Secure payments</strong><span>Trusted M-PESA payment flows</span></div></div>
+        </div>
         <div className="page">
           <div className="home-search-head">
             <div className="sh"><div className="shey">Browse homes</div><div className="shtt">Find your next home</div></div>
             <button className="bghost" onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>
           </div>
-          <SearchBar search={search} setSearch={setSearch} budget={budget} setBudget={setBudget} ptype={ptype} setPtype={setPtype} />
+          <SearchBar search={search} setSearch={setSearch} budget={budget} setBudget={setBudget} ptype={ptype} setPtype={setPtype} onSearch={() => document.getElementById("home-results")?.scrollIntoView({ behavior: "smooth", block: "start" })} />
           {propertiesLoading && <PropertySkeletons />}
           {!propertiesLoading && !propertiesError && <>
-            <div className="sh"><div className="shey">Featured & Boosted</div><div className="shtt">Top listings this week</div></div>
-            <PropertyGrid properties={featuredProps} onView={openProperty} user={user} onDel={deleteProp} favorites={favorites} onToggleFavorite={toggleFavorite} />
-            <div className="home-results-head">
+            <div className="sh featured-heading"><div className="shey">Featured & Boosted</div><div className="shtt">A few places worth seeing</div></div>
+            <PropertyGrid className="pgrid featured-grid" properties={featuredProps.slice(0, 4)} onView={openProperty} user={user} onDel={deleteProp} favorites={favorites} onToggleFavorite={toggleFavorite} />
+            <div id="home-results" className="home-results-head">
               <div className="sh"><div className="shey">More listings</div><div className="shtt">Homes matching your search</div></div>
               <span className="result-count">{filtered.length} {filtered.length === 1 ? "home" : "homes"}</span>
             </div>
@@ -1245,8 +1267,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             </div>
             {authModal!=="admin" && (
               <div className="auth-tabs">
-                <button className={`at${authF.mode==="login"?" on":""}`} onClick={()=>{setAuthF({...authF,mode:"login"});setAuthErr("");setAuthFieldErrors({});}}>Sign In</button>
-                <button className={`at${authF.mode==="register"?" on":""}`} onClick={()=>{setAuthF({...authF,mode:"register"});setAuthErr("");setAuthFieldErrors({});}}>Sign Up Free</button>
+                <button className={`at${authF.mode==="login"?" on":""}`} onClick={()=>switchAuthMode("login")}>Sign In</button>
+                <button className={`at${authF.mode==="register"?" on":""}`} onClick={()=>switchAuthMode("register")}>Sign Up Free</button>
               </div>
             )}
             {authErr && <div className="aerr">⚠️ {authErr}</div>}
@@ -1273,7 +1295,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             {authModal!=="admin" && (
               <p className="auth-switch">
                 {authF.mode==="login" ? "New to HouseHunt?" : "Already have an account?"}
-                  <button type="button" className="auth-switch-btn" onClick={()=>{setAuthF({...authF,mode: authF.mode==="login"?"register":"login"});setAuthErr("");setAuthFieldErrors({});}}>
+                  <button type="button" className="auth-switch-btn" onClick={()=>switchAuthMode(authF.mode==="login"?"register":"login")}>
                   {authF.mode==="login" ? "Create one" : "Sign in"}
                 </button>
               </p>

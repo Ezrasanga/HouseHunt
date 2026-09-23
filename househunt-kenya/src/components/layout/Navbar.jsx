@@ -52,6 +52,9 @@ export default function Navbar({ tab, setTab, user, logout, setAuthModal }) {
           </div>
         ) : (
           <>
+            <button className="admin-login-link" onClick={() => setAuthModal("admin")}>
+              🛡️ Admin
+            </button>
             <button className="bghost" style={{ fontSize: "0.74rem", padding: "5px 12px" }} onClick={() => setAuthModal("tenant")}>Tenant Login</button>
             <button className="bp" style={{ fontSize: "0.74rem", padding: "5px 12px" }} onClick={() => setAuthModal("landlord")}>Landlord Login</button>
           </>
