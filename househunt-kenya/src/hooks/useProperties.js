@@ -15,7 +15,7 @@ function errorMessage(error) {
 	return error.response?.data?.message || error.message || "Unable to load properties.";
 }
 
-export default function useProperties() {
+export default function useProperties({ limit = 12 } = {}) {
 	const [properties, setProperties] = useState([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
@@ -24,7 +24,7 @@ export default function useProperties() {
 		setLoading(true);
 		setError("");
 		try {
-			const result = await getProperties();
+			const result = await getProperties({ limit });
 			setProperties(result.properties);
 			return result;
 		} catch (requestError) {
@@ -33,11 +33,11 @@ export default function useProperties() {
 		} finally {
 			setLoading(false);
 		}
-	}, []);
+	}, [limit]);
 
 	useEffect(() => {
 		let active = true;
-		getProperties()
+		getProperties({ limit })
 			.then(result => {
 				if (active) setProperties(result.properties);
 			})
@@ -49,7 +49,7 @@ export default function useProperties() {
 			});
 
 		return () => { active = false; };
-	}, []);
+	}, [limit]);
 
 	const loadProperty = useCallback(async id => {
 		try {

@@ -17,6 +17,12 @@ import "../styles/app.css";
 const BANNED = ["porn","pornography","xxx","nude","naked","pussy","dick","cock","fuck","shit","bitch","whore","slut","nigger","faggot","bastard","cunt","retard","escort","prostitute","hooker","cocaine","heroin","kill yourself","kys","insult","stupid idiot"];
 const dirty = t => { if(!t) return false; const l=t.toLowerCase(); return BANNED.some(w=>l.includes(w)); };
 const dirtyObj = o => [o.title,o.location,o.rules,o.rooms,...(o.tags||[])].some(dirty);
+const profileFields = user => ({
+  firstName: user?.data?.firstName || user?.data?.name?.split(" ")[0] || "",
+  lastName: user?.data?.lastName || user?.data?.name?.split(" ").slice(1).join(" ") || "",
+  phone: user?.data?.phone || "",
+  profileImage: user?.data?.profileImage || "",
+});
 
 // ── DATA ──────────────────────────────────────────────────────────────────────
 const KES = n=>`KSh ${Number(n).toLocaleString()}`;
@@ -86,7 +92,7 @@ const SEED_LOG = [
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 export default function AppShell({ initialTab = "home", authMode = null, propertyId = null }) {
-  const { user, login, register, updateUser, logout: logoutUser, isLoading: authLoading } = useAuth();
+  const { user, login, register, updateUser, updateProfile, logout: logoutUser, isLoading: authLoading } = useAuth();
   const {
     properties: props,
     loading: propertiesLoading,
@@ -95,10 +101,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     loadProperty,
     addProperty,
     removeProperty,
+    updateProperty: updatePropertyApi,
     approveProperty: approvePropertyApi,
     updatePropertyStatus: updatePropertyStatusApi,
     featureProperty: featurePropertyApi,
-  } = useProperties();
+  } = useProperties({ limit: user?.role === "landlord" ? 50 : 12 });
   const [tab, setTab] = useState(initialTab);
   const [landlords, setLandlords] = useState(SEED_LANDLORDS);
   const [tenants, setTenants] = useState(SEED_TENANTS);
@@ -121,6 +128,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [pendMedia, setPendMedia] = useState([]);
   const [dragOv, setDragOv] = useState(false);
   const [form, setForm] = useState({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});
+  const [editingProperty, setEditingProperty] = useState(null);
+  const [profileForm, setProfileForm] = useState(() => profileFields(user));
   const [cwarn, setCwarn] = useState(false);
   const [authF, setAuthF] = useState({name:"",email:"",password:"",mode:authMode ?? "login"});
   const [authErr, setAuthErr] = useState("");
@@ -266,6 +275,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         password: authF.password,
         role: role === "admin" ? undefined : role,
       });
+      setProfileForm(profileFields(nextUser));
       setAuthModal(null);
       setTab(nextUser.role === "admin" ? "admin" : nextUser.role === "landlord" ? "landlord" : "tenant");
       msg(`Welcome back, ${nextUser.data.name.split(" ")[0]}!`, "ok");
@@ -296,6 +306,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         password: authF.password,
         role,
       });
+      if (nextUser.role === "landlord") setProfileForm(profileFields(nextUser));
 
       if (role === "landlord") {
         setLandlords(l => [...l, nextUser.data]);
@@ -410,11 +421,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
     setPropLoading(true);
     try {
-      const np = await addProperty(propertyPayload(form, pendMedia));
+      const np = editingProperty
+        ? await updatePropertyApi(editingProperty.id, propertyPayload(form, pendMedia))
+        : await addProperty(propertyPayload(form, pendMedia));
       setForm({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});
-      setPendMedia([]); setCwarn(false);
-      addLog("Listing posted",`${np.title} by ${user.data.name}`,"success");
-      msg("Submitted for review.","ok");
+      setPendMedia([]); setCwarn(false); setEditingProperty(null);
+      addLog(editingProperty ? "Listing updated" : "Listing posted",`${np.title} by ${user.data.name}`,"success");
+      msg(editingProperty ? "Listing updated." : "Submitted for review.","ok");
       setLdTab("mylistings");
     } catch (error) {
       setFormError(error.response?.data?.message || error.message || "Unable to post listing.");
@@ -424,18 +437,38 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   };
 
   const saveProfile = async () => {
-    if(dirty(user.data.name)){
+    const displayName = `${profileForm.firstName} ${profileForm.lastName}`.trim();
+    if(dirty(displayName)){
       msg("❌ Name contains inappropriate content.","err");
       return;
     }
     setProfileSaving(true);
     try {
-      await Promise.resolve();
-      setLandlords(l=>l.map(x=>x.id===user.data.id?{...user.data}:x));
+      await updateProfile(profileForm);
       msg("Profile saved!","ok");
+    } catch (error) {
+      msg(error.message || "Unable to save profile.","err");
     } finally {
       setProfileSaving(false);
     }
+  };
+
+  const beginEditProperty = property => {
+    setEditingProperty(property);
+    setForm({
+      title: property.title || "",
+      location: property.location || "",
+      rent: String(property.rent || ""),
+      rooms: property.rooms || "",
+      rules: property.rules || "",
+      type: property.type || "Apartment",
+      tags: (property.tags || []).join(", "),
+    });
+    setPendMedia(property.media || []);
+    setFormError("");
+    setFormInvalid({});
+    setCwarn(false);
+    setLdTab("listing");
   };
 
   const handleFiles = (files, setter) => {
@@ -710,7 +743,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       )}
 
       {/* ─── LANDLORD DASHBOARD ─── */}
-      {activeTab==="landlord" && user?.role==="landlord" && (
+          {activeTab==="landlord" && user?.role==="landlord" && propertiesLoading && (
+            <div className="page"><PropertySkeletons /></div>
+          )}
+          {activeTab==="landlord" && user?.role==="landlord" && propertiesError && !propertiesLoading && (
+            <div className="page"><div className="form-error" role="alert">Unable to load your listings: {propertiesError}<button type="button" className="bghost" style={{marginLeft:"0.75rem"}} onClick={refreshProperties}>Retry</button></div></div>
+          )}
+          {activeTab==="landlord" && user?.role==="landlord" && !propertiesLoading && !propertiesError && (
         <div className="page">
           <div className="sh"><div className="shey">Property Owner</div><div className="shtt">Landlord Dashboard</div></div>
           <div className="ldashboard-top">
@@ -719,7 +758,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 <div className="lhero-title">Welcome back, {landFirstName}</div>
                 <p>Manage your portfolio, monitor listing performance, and keep tenant leads moving.</p>
               </div>
-              <div className="lhero-note">Your active portfolio is shown below. Use quick actions to mark availability, boost listings, or update contact details.</div>
+              <div className="lhero-note">Your active portfolio is shown below. Review listing status, edit details, or update your saved phone number.</div>
             </div>
             <div className="lkpis">
               <div className="lkpi"><span>{myProps.length}</span><strong>Listings</strong></div>
@@ -748,7 +787,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             <div>
               {ldTab==="profile" && <div className="fcard">
                 <h3>My Profile</h3><p className="sub">Your public display name on all listings.</p>
-                <div className="fg"><label>Display Name</label><input value={user.data.name} onChange={e=>updateUser(u=>({...u,data:{...u.data,name:e.target.value}}))} disabled={profileSaving} /></div>
+                <div className="frow">
+                  <div className="fg"><label>First Name</label><input value={profileForm.firstName} onChange={e=>setProfileForm({...profileForm,firstName:e.target.value})} disabled={profileSaving} /></div>
+                  <div className="fg"><label>Last Name</label><input value={profileForm.lastName} onChange={e=>setProfileForm({...profileForm,lastName:e.target.value})} disabled={profileSaving} /></div>
+                </div>
+                <div className="fg"><label>Phone</label><input value={profileForm.phone} onChange={e=>setProfileForm({...profileForm,phone:e.target.value})} disabled={profileSaving} /></div>
                 <button className="bp" onClick={saveProfile} disabled={profileSaving} aria-busy={profileSaving}>{profileSaving ? "Saving profile…" : "Save Profile →"}</button>
               </div>}
 
@@ -756,18 +799,18 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 <h3>Contact & Social Media</h3><p className="sub">Shown on listings so tenants can reach you directly.</p>
                 <div className="divlbl"><span>📞 Phone Numbers</span></div>
                 <div className="frow">
-                  <div className="fg"><label>Primary Phone</label><div className="inpw"><span className="inpx">🇰🇪</span><input placeholder="e.g. +254 700 000 000" value={user.data.phone||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,phone:e.target.value}}))} /></div></div>
-                  <div className="fg"><label>WhatsApp</label><div className="inpw"><span className="inpx">💬</span><input placeholder="e.g. +254 700 000 000" value={user.data.whatsapp||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,whatsapp:e.target.value}}))} /></div></div>
+                  <div className="fg"><label>Primary Phone</label><div className="inpw"><span className="inpx">🇰🇪</span><input placeholder="e.g. +254 700 000 000" value={profileForm.phone} onChange={e=>setProfileForm({...profileForm,phone:e.target.value})} /></div></div>
+                  <div className="fg"><label>WhatsApp <small>(not persisted yet)</small></label><div className="inpw"><span className="inpx">💬</span><input placeholder="Not available" value={user.data.whatsapp||""} readOnly /></div></div>
                 </div>
-                <div className="fg"><label>Email</label><div className="inpw"><span className="inpx">✉️</span><input type="email" placeholder="you@example.com" value={user.data.email||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,email:e.target.value}}))} /></div></div>
-                <div className="divlbl"><span>📱 Social Media</span></div>
+                <div className="fg"><label>Email <small>(account email)</small></label><div className="inpw"><span className="inpx">✉️</span><input type="email" value={user.data.email||""} readOnly /></div></div>
+                <div className="divlbl"><span>📱 Social Media <small>(not persisted yet)</small></span></div>
                 <div className="frow">
-                  <div className="fg"><label>Instagram</label><div className="inpw"><span className="inpx">📸 @</span><input placeholder="handle" value={user.data.ig||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,ig:e.target.value}}))} /></div></div>
-                  <div className="fg"><label>Facebook</label><div className="inpw"><span className="inpx">👍</span><input placeholder="page name" value={user.data.fb||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,fb:e.target.value}}))} /></div></div>
+                  <div className="fg"><label>Instagram</label><div className="inpw"><span className="inpx">📸 @</span><input placeholder="Not available" value={user.data.ig||""} readOnly /></div></div>
+                  <div className="fg"><label>Facebook</label><div className="inpw"><span className="inpx">👍</span><input placeholder="Not available" value={user.data.fb||""} readOnly /></div></div>
                 </div>
                 <div className="frow">
-                  <div className="fg"><label>TikTok</label><div className="inpw"><span className="inpx">🎵 @</span><input placeholder="handle" value={user.data.tt||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,tt:e.target.value}}))} /></div></div>
-                  <div className="fg"><label>X / Twitter</label><div className="inpw"><span className="inpx">𝕏 @</span><input placeholder="handle" value={user.data.tw||""} onChange={e=>updateUser(u=>({...u,data:{...u.data,tw:e.target.value}}))} /></div></div>
+                  <div className="fg"><label>TikTok</label><div className="inpw"><span className="inpx">🎵 @</span><input placeholder="Not available" value={user.data.tt||""} readOnly /></div></div>
+                  <div className="fg"><label>X / Twitter</label><div className="inpw"><span className="inpx">𝕏 @</span><input placeholder="Not available" value={user.data.tw||""} readOnly /></div></div>
                 </div>
                 {(user.data.phone||user.data.ig) && <div className="pprev"><h4>Live Preview</h4>
                   <div className="cchips">
@@ -782,7 +825,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     {user.data.tw&&<span className="sc sc-tw">𝕏 @{user.data.tw}</span>}
                   </div>
                 </div>}
-                <button className="bp" onClick={saveProfile}>Save Contact Info →</button>
+                <button className="bp" onClick={saveProfile}>Save Phone →</button>
               </div>}
 
               {ldTab==="media" && <div className="fcard">
@@ -812,8 +855,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               </div>}
 
               {ldTab==="listing" && <div className="fcard">
-                <h3>Add New Listing</h3>
-                <p className="sub">Free to post. Pay KSh {settings.boostFee} to boost to the top. {pendMedia.length>0 && `${pendMedia.length} media file(s) ready.`}</p>
+                <h3>{editingProperty ? "Edit Listing" : "Add New Listing"}</h3>
+                <p className="sub">Free to post. New listings are reviewed before going live. {pendMedia.length>0 && `${pendMedia.length} media file(s) ready.`}</p>
                 {formError && <div className="form-error" role="alert">{formError}</div>}
                 {cwarn && <div className="cwarn"><p>⚠️ Your content contains inappropriate language. Please revise before submitting.</p></div>}
                 <div className="frow">
@@ -833,8 +876,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                   </div>
                 ))}{pendMedia.length>5&&<div style={{width:50,height:38,borderRadius:6,background:"rgba(10,10,24,0.07)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.68rem",color:"#bbb"}}>+{pendMedia.length-5}</div>}</div>}
                 <div style={{display:"flex",gap:8}}>
-                  <button className="bp" style={{flex:1,padding:"12px"}} onClick={addProp} disabled={propLoading} aria-busy={propLoading}>{propLoading ? "Posting…" : "Post Listing Free →"}</button>
-                  <button className="bboost" onClick={()=>msg("Post your listing first, then boost from My Listings.","info")} disabled={propLoading}>⭐ KSh {settings.boostFee} Boost</button>
+                  <button className="bp" style={{flex:1,padding:"12px"}} onClick={addProp} disabled={propLoading} aria-busy={propLoading}>{propLoading ? "Saving…" : editingProperty ? "Save Listing →" : "Post Listing Free →"}</button>
+                  {editingProperty && <button className="bghost" onClick={()=>{setEditingProperty(null);setForm({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});setPendMedia([]);}} disabled={propLoading}>Cancel</button>}
                 </div>
               </div>}
 
@@ -850,13 +893,12 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     </div>
                     <div className="lacts">
                       <div className="lstatus-group">
-                        <span className={`sbadge sb-${p.status==="available"?"av":"tk"}`}>{p.status==="available"?"✓ Available":"⊘ Taken"}</span>
+                        <span className={`sbadge sb-${p.status==="available"?"av":p.status==="pending"?"pd":"tk"}`}>{p.status==="available"?"✓ Available":p.status==="pending"?"⏳ Pending":p.status==="hidden"?"Hidden":"Occupied"}</span>
                         {p.approved===false && <span className="sbadge sb-pd">⏳ Pending</span>}
                         {p.boosted && <span className="sbadge sb-bo">⭐ Boosted</span>}
                       </div>
                       <div className="lrent">{KES(p.rent)}</div>
-                      {!p.boosted && <button className="bboost" onClick={()=>setPayModal({type:"boost",propId:p.id})}>⭐ Boost</button>}
-                      <button className="bver" onClick={()=>markTaken(p.id)}>{p.status==="taken"?"↩ Unmark":"🏠 Mark Taken"}</button>
+                      <button className="bghost" onClick={()=>beginEditProperty(p)}>Edit</button>
                       <button className="bdel" onClick={()=>deleteProp(p.id)}>🗑</button>
                     </div>
                   </div>
@@ -865,7 +907,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             </div>
           </div>
         </div>
-      )}
+          )}
       {activeTab==="landlord" && !user && <div className="page" style={{textAlign:"center",padding:"5rem 2rem"}}>
         <h2 style={{fontFamily:"Cormorant Garamond,serif",fontSize:"2rem",marginBottom:"1rem"}}>Landlord Dashboard</h2>
         <p style={{color:"#bbb",marginBottom:"1.5rem"}}>Log in to manage your listings.</p>

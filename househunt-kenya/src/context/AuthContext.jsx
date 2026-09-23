@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AuthContext } from "./auth-context";
-import { login as loginRequest, profile as profileRequest, register as registerRequest } from "../services/authService";
+import { login as loginRequest, profile as profileRequest, register as registerRequest, updateProfile as updateProfileRequest } from "../services/authService";
 
 const TOKEN_KEY = "token";
 const USER_KEY = "househunt-user";
@@ -124,12 +124,27 @@ export function AuthProvider({ children }) {
 		}
 	};
 
+	const updateProfile = async payload => {
+		setIsLoading(true);
+		try {
+			const response = await updateProfileRequest(payload);
+			if (!response.data.success) throw new Error(response.data.message || "Profile update failed.");
+			const storedToken = window.localStorage.getItem(TOKEN_KEY);
+			return saveSession({ token: storedToken, user: response.data.data.user });
+		} catch (error) {
+			throw authenticationError(error, "Profile update failed.");
+		} finally {
+			setIsLoading(false);
+		}
+	};
+
 	const value = {
 		user,
 		isLoading,
 		isRestoring,
 		login,
 		register,
+		updateProfile,
 		updateUser,
 		logout: clearSession,
 	};
