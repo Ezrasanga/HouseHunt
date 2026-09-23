@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import useAuth from "../hooks/useAuth";
+import useProperties from "../hooks/useProperties";
+import { getAnnouncements } from "../services/announcementService";
 import Navbar from "../components/layout/Navbar";
 import Hero from "../components/layout/Hero";
 import SearchBar from "../components/layout/SearchBar";
@@ -19,15 +21,32 @@ const dirtyObj = o => [o.title,o.location,o.rules,o.rooms,...(o.tags||[])].some(
 const KES = n=>`KSh ${Number(n).toLocaleString()}`;
 const nowStr = ()=>new Date().toLocaleString("en-KE",{hour12:false}).replace(","," ");
 const todayStr = ()=>new Date().toISOString().split("T")[0];
+const propertyTypeForApi = type => type === "House" || type === "Penthouse" ? "Apartment" : type === "Room" ? "Single Room" : type;
+const propertyPayload = (form, media) => {
+  const locationParts = form.location.split(",").map(part => part.trim()).filter(Boolean);
+  const rooms = String(form.rooms || "");
+  const bedroomMatch = rooms.match(/(\d+)\s*bed/i);
+  const bathroomMatch = rooms.match(/(\d+)\s*bath/i);
+  const description = [form.rules, rooms].filter(Boolean).join(" ").trim() || `${form.title} property listing.`;
+  const tags = form.tags ? form.tags.split(",").map(tag => tag.trim().toLowerCase()).filter(Boolean) : [];
+  const amenityNames = ["wifi", "parking", "water", "electricity", "security", "balcony", "furnished", "petFriendly"];
 
-const SEED_PROPS = [
-  {id:1,title:"Spacious 2-Bedroom Apartment",location:"Westlands, Nairobi",rent:35000,rooms:"2 Bed · 1 Bath",type:"Apartment",rules:"No pets. Quiet hours after 10 PM. References required.",tags:["WiFi","Parking","Security"],color:"#B5451B",initials:"WN",media:[],landlordId:"L001",status:"available",boosted:true,flagged:false,approved:true,contact:{phone:"+254 712 345 678",whatsapp:"+254712345678",email:"grace@mail.com",ig:"grace_homes",fb:"GraceHomes",tt:"grace_ke",tw:"GraceHomes"}},
-  {id:2,title:"Affordable Single Room",location:"Kilimani, Nairobi",rent:12000,rooms:"Studio · Shared Bath",type:"Room",rules:"Rent due on 1st. No loud music.",tags:["Water Included","Near Matatu"],color:"#2D5016",initials:"KN",media:[],landlordId:"L002",status:"available",boosted:false,flagged:false,approved:true,contact:{phone:"+254 720 111 222",whatsapp:"+254720111222",email:"john@mail.com",ig:"",fb:"KilimaniRooms",tt:"",tw:""}},
-  {id:3,title:"Modern 3-Bedroom House",location:"Mombasa Island",rent:45000,rooms:"3 Bed · 2 Bath",type:"House",rules:"Family preferred. No sub-letting.",tags:["Garden","Parking","Borehole"],color:"#C4991A",initials:"MI",media:[],landlordId:"L001",status:"taken",boosted:false,flagged:false,approved:true,contact:{phone:"+254 733 900 100",whatsapp:"+254733900100",email:"grace@mail.com",ig:"grace_homes",fb:"",tt:"grace_ke",tw:""}},
-  {id:4,title:"Executive 1-Bedroom",location:"Lavington, Nairobi",rent:28000,rooms:"1 Bed · 1 Bath",type:"Apartment",rules:"No parties. Professionals preferred.",tags:["Gym","Pool","24hr Security"],color:"#7C3A1E",initials:"LN",media:[],landlordId:"L002",status:"available",boosted:true,flagged:false,approved:true,contact:{phone:"+254 700 456 789",whatsapp:"+254700456789",email:"john@mail.com",ig:"lavington_exec",fb:"LavingtonExec",tt:"",tw:"LavingtonExec"}},
-  {id:5,title:"Cosy Bedsitter",location:"Ngong Road, Nairobi",rent:9500,rooms:"Bedsitter · Shared Facilities",type:"Bedsitter",rules:"Students welcome. 2 months deposit.",tags:["DSTV","Water 24hr"],color:"#E05A1E",initials:"NG",media:[],landlordId:"L002",status:"available",boosted:false,flagged:false,approved:true,contact:{phone:"+254 745 678 901",whatsapp:"",email:"john@mail.com",ig:"",fb:"",tt:"",tw:""}},
-  {id:6,title:"Luxury Penthouse",location:"Runda, Nairobi",rent:120000,rooms:"4 Bed · 3 Bath",type:"Penthouse",rules:"Diplomatic/corporate tenants. Long lease.",tags:["City View","Concierge","Gym","Pool"],color:"#1A1A2E",initials:"RN",media:[],landlordId:"L001",status:"available",boosted:true,flagged:false,approved:true,contact:{phone:"+254 799 000 001",whatsapp:"+254799000001",email:"grace@mail.com",ig:"grace_homes",fb:"GraceHomes",tt:"grace_ke",tw:"GraceHomes"}},
-];
+  return {
+    title: form.title,
+    description: description.length >= 20 ? description : `${description} Available for viewing and enquiries.`,
+    price: Number(form.rent),
+    propertyType: propertyTypeForApi(form.type),
+    location: {
+      county: locationParts.at(-1) || form.location,
+      town: locationParts[0] || form.location,
+      estate: locationParts.length > 2 ? locationParts[0] : "",
+    },
+    bedrooms: Number(bedroomMatch?.[1] || 0),
+    bathrooms: Number(bathroomMatch?.[1] || 0),
+    amenities: Object.fromEntries(amenityNames.map(name => [name, tags.includes(name.toLowerCase())])),
+    images: media.filter(item => item.type === "image" && !item.url.startsWith("blob:")).map(item => item.url),
+  };
+};
 
 const SEED_LANDLORDS = [
   {id:"L001",name:"Grace Wanjiku",email:"grace@mail.com",password:"grace123",phone:"+254 712 345 678",whatsapp:"+254712345678",ig:"grace_homes",fb:"GraceHomes",tt:"grace_ke",tw:"GraceHomes",banned:false,joined:"2024-01-05"},
@@ -58,16 +77,27 @@ const SEED_LOG = [
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 export default function AppShell({ initialTab = "home", authMode = null, propertyId = null }) {
   const { user, login, register, updateUser, logout: logoutUser, isLoading: authLoading } = useAuth();
+  const {
+    properties: props,
+    loading: propertiesLoading,
+    error: propertiesError,
+    loadProperty,
+    addProperty,
+    removeProperty,
+    approveProperty: approvePropertyApi,
+    updatePropertyStatus: updatePropertyStatusApi,
+    featureProperty: featurePropertyApi,
+  } = useProperties();
   const [tab, setTab] = useState(initialTab);
-  const [props, setProps] = useState(SEED_PROPS);
   const [landlords, setLandlords] = useState(SEED_LANDLORDS);
   const [tenants, setTenants] = useState(SEED_TENANTS);
   const [anns, setAnns] = useState(SEED_ANNOUNCEMENTS);
+  const [tenantAnnouncements, setTenantAnnouncements] = useState([]);
+  const [announcementError, setAnnouncementError] = useState("");
   const [log, setLog] = useState(SEED_LOG);
   const [toast, setToast] = useState(null);
 
-  const initialRouteProp = propertyId && props.length ? props.find(p => String(p.id) === String(propertyId)) : null;
-  const [selProp, setSelProp] = useState(initialRouteProp);
+  const [selProp, setSelProp] = useState(null);
   const [midx, setMidx] = useState(0);
   const [authModal, setAuthModal] = useState(authMode ? "tenant" : null);
   const [payModal, setPayModal] = useState(null);
@@ -101,6 +131,26 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const fileRef = useRef();
   const admFileRef = useRef();
   const modalRef = useRef(null);
+
+  useEffect(() => {
+    if (!propertyId) return undefined;
+
+    let active = true;
+    loadProperty(propertyId)
+      .then(property => { if (active) setSelProp(property); })
+      .catch(() => { if (active) setSelProp(null); });
+
+    return () => { active = false; };
+  }, [loadProperty, propertyId]);
+
+  useEffect(() => {
+    let active = true;
+    getAnnouncements()
+      .then(items => { if (active) setTenantAnnouncements(items); })
+      .catch(error => { if (active) setAnnouncementError(error.response?.data?.message || error.message || "Unable to load announcements."); });
+
+    return () => { active = false; };
+  }, []);
 
   const addLog = (action, detail, kind="info") => setLog(l=>[{id:Date.now(),time:nowStr(),action,detail,kind},...l.slice(0,49)]);
   const msg = (m, k="ok") => { setToast({m,k}); setTimeout(()=>setToast(null),3000); };
@@ -206,10 +256,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   // PROPERTY CRUD
   const deleteProp = (id, direct=false) => {
     if(direct){
-      setProps(p=>p.filter(x=>x.id!==id));
-      if(selProp?.id===id) setSelProp(null);
-      addLog("Listing deleted",`ID ${id}`,"warn");
-      msg("Listing deleted.","warn");
+      removeProperty(id)
+        .then(() => {
+          if(selProp?.id===id) setSelProp(null);
+          addLog("Listing deleted",`ID ${id}`,"warn");
+          msg("Listing deleted.","warn");
+        })
+        .catch(error => msg(error.response?.data?.message || error.message, "err"));
       return;
     }
     setConfModal({type:"delete",title:"Delete Listing",
@@ -219,27 +272,44 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
   const markTaken = id => {
     const p=props.find(x=>x.id===id);
-    setProps(l=>l.map(x=>x.id===id?{...x,status:x.status==="taken"?"available":"taken"}:x));
-    addLog("Status changed",`${p?.title} → ${p?.status==="taken"?"Available":"Taken"}`,"info");
-    msg(p?.status==="taken"?"↩ Marked Available.":"🏠 Marked Taken — pending admin.","info");
+    if (user?.role !== "admin") {
+      msg("Availability changes require admin verification.", "warn");
+      return;
+    }
+    const nextStatus = p?.status === "taken" ? "AVAILABLE" : "OCCUPIED";
+    updatePropertyStatusApi(id, nextStatus)
+      .then(() => {
+        addLog("Status changed",`${p?.title} → ${nextStatus === "AVAILABLE" ? "Available" : "Taken"}`,"info");
+        msg(nextStatus === "AVAILABLE" ? "↩ Marked Available." : "🏠 Marked Taken.","info");
+      })
+      .catch(error => msg(error.response?.data?.message || error.message, "err"));
   };
 
   const adminVerify = id => {
-    setProps(l=>l.map(x=>x.id===id?{...x,status:"taken"}:x));
-    addLog("Admin verified taken",`ID ${id}`,"success");
-    msg("✅ Verified as Taken.","ok");
+    updatePropertyStatusApi(id, "OCCUPIED")
+      .then(() => {
+        addLog("Admin verified taken",`ID ${id}`,"success");
+        msg("✅ Verified as Taken.","ok");
+      })
+      .catch(error => msg(error.response?.data?.message || error.message, "err"));
   };
 
   const approveProp = id => {
-    setProps(l=>l.map(x=>x.id===id?{...x,approved:true,flagged:false}:x));
-    addLog("Listing approved",`ID ${id}`,"success");
-    msg("✅ Listing approved and live.","ok");
+    approvePropertyApi(id, true)
+      .then(() => {
+        addLog("Listing approved",`ID ${id}`,"success");
+        msg("✅ Listing approved and live.","ok");
+      })
+      .catch(error => msg(error.response?.data?.message || error.message, "err"));
   };
 
   const flagProp = id => {
-    setProps(l=>l.map(x=>x.id===id?{...x,flagged:true,approved:false}:x));
-    addLog("Listing flagged",`ID ${id}`,"warn");
-    msg("🚩 Listing flagged and hidden.","warn");
+    approvePropertyApi(id, false)
+      .then(() => {
+        addLog("Listing flagged",`ID ${id}`,"warn");
+        msg("🚩 Listing flagged and hidden.","warn");
+      })
+      .catch(error => msg(error.response?.data?.message || error.message, "err"));
   };
 
   const banUser = (role, id) => {
@@ -270,21 +340,14 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
     setPropLoading(true);
     try {
-      await Promise.resolve();
-      const colors=["#B5451B","#2D5016","#1A1A2E","#7C3A1E","#C4991A","#E05A1E"];
-      const tagArr = form.tags?form.tags.split(",").map(t=>t.trim()).filter(Boolean):["New Listing"];
-      const np={id:Date.now(),...form,rent:parseInt(form.rent),tags:tagArr,
-        color:colors[props.length%colors.length],initials:form.location.slice(0,2).toUpperCase(),
-        media:[...pendMedia],landlordId:user.data.id,status:"available",boosted:false,
-        flagged:false,approved:!settings.requireApproval,
-        contact:{phone:user.data.phone||"",whatsapp:user.data.whatsapp||"",email:user.data.email||"",
-          ig:user.data.ig||"",fb:user.data.fb||"",tt:user.data.tt||"",tw:user.data.tw||""}};
-      setProps(l=>[np,...l]);
+      const np = await addProperty(propertyPayload(form, pendMedia));
       setForm({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});
       setPendMedia([]); setCwarn(false);
       addLog("Listing posted",`${np.title} by ${user.data.name}`,"success");
-      msg(settings.requireApproval?"Submitted for review.":"✅ Listing is live!","ok");
+      msg("Submitted for review.","ok");
       setLdTab("mylistings");
+    } catch (error) {
+      setFormError(error.response?.data?.message || error.message || "Unable to post listing.");
     } finally {
       setPropLoading(false);
     }
@@ -319,7 +382,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     try {
       await Promise.resolve();
       if(payModal.type==="boost"){
-        setProps(l=>l.map(x=>x.id===payModal.propId?{...x,boosted:true}:x));
+        await featurePropertyApi(payModal.propId, true);
         addLog("Listing boosted",`ID ${payModal.propId} · KSh ${settings.boostFee}`,"payment");
         msg("⭐ Listing boosted to top!","ok");
       } else {
@@ -355,26 +418,27 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     if(dirtyObj(admListF)){ msg("❌ Inappropriate content.","err"); return; }
     setAdminListingLoading(true);
     try {
-      await Promise.resolve();
-      const colors=["#B5451B","#2D5016","#1A1A2E","#7C3A1E","#C4991A","#E05A1E"];
-      const tagArr=admListF.tags?admListF.tags.split(",").map(t=>t.trim()).filter(Boolean):["Admin Featured"];
-      const np={id:Date.now(),...admListF,rent:parseInt(admListF.rent),tags:tagArr,
-        color:colors[props.length%colors.length],initials:admListF.location.slice(0,2).toUpperCase(),
-        media:[...admMedia],landlordId:"ADMIN",status:"available",boosted:true,
-        flagged:false,approved:true,
-        contact:{phone:"+254 000 000 000",whatsapp:"",email:"admin@househunt.ke",ig:"",fb:"HouseHuntKenya",tt:"",tw:""}};
-      setProps(l=>[np,...l]);
+      const np = await addProperty(propertyPayload(admListF, admMedia));
+      await approvePropertyApi(np.id, true);
+      await featurePropertyApi(np.id, true);
       setAdmListF({title:"",location:"",rent:"",rooms:"",type:"Apartment",rules:"",tags:""});
       setAdmMedia([]);
       addLog("Admin posted listing",np.title,"success");
       msg("✅ Admin listing live & boosted!","ok");
+    } catch (error) {
+      msg(error.response?.data?.message || error.message || "Unable to post listing.", "err");
     } finally {
       setAdminListingLoading(false);
     }
   };
 
   const liveProp = selProp ? props.find(p=>p.id===selProp.id)||selProp : null;
-  const selectedLandlord = liveProp ? landlords.find(l=>l.id===liveProp.landlordId) : null;
+  const selectedLandlord = liveProp?.landlord ? {
+    name: [liveProp.landlord.firstName, liveProp.landlord.lastName].filter(Boolean).join(" "),
+    email: liveProp.landlord.email,
+    phone: liveProp.landlord.phone,
+    joined: liveProp.landlord.createdAt,
+  } : (liveProp ? landlords.find(l=>l.id===liveProp.landlordId) : null);
   const canManage = liveProp && (user?.role==="admin"||(user?.role==="landlord"&&liveProp.landlordId===user?.data?.id));
   const activeAnns = anns.filter(a=>a.active);
   const activeTab = tab;
@@ -414,14 +478,30 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       <Navbar tab={tab} setTab={setTab} user={user} logout={logout} setAuthModal={setAuthModal} />
 
       {/* ANN BAR */}
-      {activeAnns.length>0 && tab!=="admin" && (
+      {tenantAnnouncements.length>0 && tab!=="admin" && (
         <div className="annbar">
-          {activeAnns.map(a=>(
+          {tenantAnnouncements.map(a=>(
             <div key={a.id} className={`anntag at-${a.type}`}>
               {a.type==="success"?"🎉":a.type==="info"?"📢":"⚠️"} {a.title}: {a.body}
             </div>
           ))}
         </div>
+      )}
+
+      {announcementError && tab === "tenant" && (
+        <div className="form-error" role="alert" style={{ margin: "1rem auto", maxWidth: 920 }}>
+          Unable to load announcements: {announcementError}
+        </div>
+      )}
+
+      {propertiesError && (
+        <div className="form-error" role="alert" style={{ margin: "1rem auto", maxWidth: 920 }}>
+          Unable to load properties: {propertiesError}
+          <button type="button" className="bghost" style={{ marginLeft: "0.75rem" }} onClick={() => window.location.reload()}>Retry</button>
+        </div>
+      )}
+      {propertyId && !propertiesLoading && !liveProp && !propertiesError && (
+        <div className="page" role="alert"><div className="noresult"><h3>Property not found</h3><p>This listing is unavailable or no longer visible.</p></div></div>
       )}
 
       {/* ─── HOME ─── */}
@@ -439,22 +519,18 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             <button className="bghost" onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>
           </div>
           <SearchBar search={search} setSearch={setSearch} budget={budget} setBudget={setBudget} ptype={ptype} setPtype={setPtype} />
-          <div className="sh"><div className="shey">Featured & Boosted</div><div className="shtt">Top listings this week</div></div>
-          <PropertyGrid
-            properties={featuredProps}
-            onView={openProperty}
-            user={user}
-            onDel={deleteProp}
-            favorites={favorites}
-            onToggleFavorite={toggleFavorite}
-          />
-          <div className="home-results-head">
-            <div className="sh"><div className="shey">More listings</div><div className="shtt">Homes matching your search</div></div>
-            <span className="result-count">{filtered.length} {filtered.length === 1 ? "home" : "homes"}</span>
-          </div>
-          {remainingProps.length === 0
-            ? <div className="noresult"><h3>{filtered.length === 0 ? "No listings found" : "You are viewing all matching featured listings"}</h3><p>{filtered.length === 0 ? "Try adjusting your filters or clear the search to see all available homes." : "Try another search to discover more homes."}</p>{filtered.length === 0 && <button onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>}</div>
-            : <PropertyGrid properties={remainingProps} onView={openProperty} user={user} onDel={deleteProp} favorites={favorites} onToggleFavorite={toggleFavorite} />}
+          {propertiesLoading && <p role="status" style={{ padding: "1rem 0", color: "#888" }}>Loading properties…</p>}
+          {!propertiesLoading && !propertiesError && <>
+            <div className="sh"><div className="shey">Featured & Boosted</div><div className="shtt">Top listings this week</div></div>
+            <PropertyGrid properties={featuredProps} onView={openProperty} user={user} onDel={deleteProp} favorites={favorites} onToggleFavorite={toggleFavorite} />
+            <div className="home-results-head">
+              <div className="sh"><div className="shey">More listings</div><div className="shtt">Homes matching your search</div></div>
+              <span className="result-count">{filtered.length} {filtered.length === 1 ? "home" : "homes"}</span>
+            </div>
+            {remainingProps.length === 0
+              ? <div className="noresult"><h3>{filtered.length === 0 ? "No listings found" : "You are viewing all matching featured listings"}</h3><p>{filtered.length === 0 ? "Try adjusting your filters or clear the search to see all available homes." : "Try another search to discover more homes."}</p>{filtered.length === 0 && <button onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>}</div>
+              : <PropertyGrid properties={remainingProps} onView={openProperty} user={user} onDel={deleteProp} favorites={favorites} onToggleFavorite={toggleFavorite} />}
+          </>}
         </div>
       </>}
 
@@ -541,7 +617,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
           )}
           <div className="sh"><div className="shey">Browse listings</div><div className="shtt">Find Your Home</div></div>
           <SearchBar search={search} setSearch={setSearch} budget={budget} setBudget={setBudget} ptype={ptype} setPtype={setPtype} />
-          {filtered.length===0
+          {propertiesLoading
+            ? <p role="status" style={{ padding: "1rem 0", color: "#888" }}>Loading tenant properties…</p>
+            : propertiesError
+            ? <div className="form-error" role="alert">Unable to load tenant properties: {propertiesError}</div>
+            : filtered.length===0
             ? <div className="noresult"><h3>No listings found</h3><p>Try adjusting your filters or clear the search to see all available homes.</p><button onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button></div>
             : <PropertyGrid
                 properties={filtered}
@@ -879,7 +959,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                       <div className="arow-acts">
                         <span className="sbadge sb-tk">⊘ Taken</span>
                         <button className="bapp" onClick={()=>{adminVerify(p.id);}}>✅ Verify & Finalise</button>
-                        <button className="bghost" style={{fontSize:"0.72rem",padding:"5px 11px",color:"#C4991A",borderColor:"rgba(196,153,26,0.3)"}} onClick={()=>{setProps(l=>l.map(x=>x.id===p.id?{...x,status:"available"}:x));msg("↩ Restored to Available.","info");}}>↩ Reject</button>
+                        <button className="bghost" style={{fontSize:"0.72rem",padding:"5px 11px",color:"#C4991A",borderColor:"rgba(196,153,26,0.3)"}} onClick={()=>updatePropertyStatusApi(p.id, "AVAILABLE").then(()=>msg("↩ Restored to Available.","info")).catch(error=>msg(error.response?.data?.message || error.message,"err"))}>↩ Reject</button>
                         <button className="bdel" onClick={()=>deleteProp(p.id)}>🗑</button>
                       </div>
                     </div>
