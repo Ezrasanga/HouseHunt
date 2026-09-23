@@ -16,7 +16,7 @@ const locationSchema = new mongoose.Schema(
         type: [Number],
         validate: {
           validator: function (value) {
-            return value.length === 2;
+            return value.length === 0 || value.length === 2;
           },
           message: 'Coordinates must be an array of [longitude, latitude]',
         },
@@ -156,6 +156,13 @@ const propertySchema = new mongoose.Schema(
 propertySchema.index({ 'location.coordinates': '2dsphere' });
 propertySchema.index({ owner: 1, status: 1 });
 propertySchema.index({ isApproved: 1, featured: -1, status: 1 });
+
+propertySchema.pre('validate', function (next) {
+  if (this.location?.coordinates?.coordinates?.length === 0) {
+    this.location.coordinates = undefined;
+  }
+  next();
+});
 
 propertySchema.virtual('fullAddress').get(function () {
   if (!this.location) return '';

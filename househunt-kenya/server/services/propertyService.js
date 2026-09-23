@@ -437,9 +437,13 @@ function validatePropertyInput(payload = {}) {
     }
 
     if (field === 'location') {
-      const location = data[field] || {};
+      const location = { ...(data[field] || {}) };
       if (!location.county || !location.town) errors.push({ field: 'location', message: 'Location must include county and town' });
-      else updates.location = location;
+      else {
+        const coordinates = location.coordinates?.coordinates;
+        if (Array.isArray(coordinates) && coordinates.length === 0) delete location.coordinates;
+        updates.location = location;
+      }
       continue;
     }
 
