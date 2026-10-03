@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FiCheckCircle, FiCreditCard, FiPhone } from "react-icons/fi";
 import { useLocation, useNavigate } from "react-router-dom";
 import useAuth from "../hooks/useAuth";
 import useProperties from "../hooks/useProperties";
 import { getAnnouncements } from "../services/announcementService";
+import { deleteUser, getUsers, updateUserStatus } from "../services/userService";
 import Navbar from "../components/layout/Navbar";
 import Hero from "../components/layout/Hero";
 import SearchBar from "../components/layout/SearchBar";
@@ -64,15 +65,6 @@ function PropertySkeletons() {
   </div>;
 }
 
-const SEED_LANDLORDS = [
-  {id:"L001",name:"Grace Wanjiku",email:"grace@mail.com",password:"grace123",phone:"+254 712 345 678",whatsapp:"+254712345678",ig:"grace_homes",fb:"GraceHomes",tt:"grace_ke",tw:"GraceHomes",banned:false,joined:"2024-01-05"},
-  {id:"L002",name:"John Kamau",email:"john@mail.com",password:"john123",phone:"+254 720 111 222",whatsapp:"+254720111222",ig:"",fb:"KilimaniRooms",tt:"",tw:"",banned:false,joined:"2024-01-18"},
-];
-
-const SEED_TENANTS = [
-  {id:"T001",name:"Amina Odhiambo",email:"amina@mail.com",password:"amina123",unlocked:[],banned:false,joined:"2024-02-01"},
-];
-
 const SEED_ANNOUNCEMENTS = [
   {id:"A1",title:"Welcome to HouseHunt Kenya!",body:"Kenya's most trusted property marketplace. Verified listings across 12 cities.",type:"success",date:"2024-01-15",active:true},
   {id:"A2",title:"Mombasa listings are now live 🎉",body:"50+ verified listings on Mombasa Island and Nyali just added.",type:"info",date:"2024-02-10",active:true},
@@ -95,6 +87,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const { user, login, register, updateUser, updateProfile, logout: logoutUser, isLoading: authLoading } = useAuth();
   const {
     properties: props,
+    pagination: propertyPagination,
     loading: propertiesLoading,
     error: propertiesError,
     refresh: refreshProperties,
@@ -105,10 +98,14 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     approveProperty: approvePropertyApi,
     updatePropertyStatus: updatePropertyStatusApi,
     featureProperty: featurePropertyApi,
-  } = useProperties({ limit: user?.role === "landlord" ? 50 : 12 });
+  } = useProperties({ limit: user?.role === "admin" ? 100 : user?.role === "landlord" ? 50 : 12 });
   const [tab, setTab] = useState(initialTab);
-  const [landlords, setLandlords] = useState(SEED_LANDLORDS);
-  const [tenants, setTenants] = useState(SEED_TENANTS);
+  const [landlords, setLandlords] = useState([]);
+  const [tenants, setTenants] = useState([]);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminUsersLoading, setAdminUsersLoading] = useState(false);
+  const [adminUsersError, setAdminUsersError] = useState("");
+  const [adminUserCounts, setAdminUserCounts] = useState({ total: 0, landlords: 0, tenants: 0 });
   const [anns, setAnns] = useState(SEED_ANNOUNCEMENTS);
   const [tenantAnnouncements, setTenantAnnouncements] = useState([]);
   const [announcementError, setAnnouncementError] = useState("");
@@ -213,6 +210,57 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     return () => { active = false; };
   }, []);
 
+  const clearAdminCollections = useCallback(() => {
+    setAdminUsers([]);
+    setLandlords([]);
+    setTenants([]);
+    setAdminUserCounts({ total: 0, landlords: 0, tenants: 0 });
+    setAdminUsersError("");
+  }, []);
+
+  const loadAdminUsers = useCallback(async (page = 1) => {
+    if (user?.role !== "admin") return;
+
+    setAdminUsersLoading(true);
+    setAdminUsersError("");
+
+    try {
+      const [usersResponse, landlordResponse, tenantResponse] = await Promise.all([
+        getUsers({ page, limit: 100 }),
+        getUsers({ role: "LANDLORD", page: 1, limit: 100 }),
+        getUsers({ role: "TENANT", page: 1, limit: 100 }),
+      ]);
+
+      const nextUsers = usersResponse.users || [];
+      setAdminUsers(nextUsers);
+      setLandlords((landlordResponse.users || []).filter(userEntry => userEntry.role === "LANDLORD"));
+      setTenants((tenantResponse.users || []).filter(userEntry => userEntry.role === "TENANT"));
+      setAdminUserCounts({
+        total: usersResponse.pagination?.total ?? nextUsers.length,
+        landlords: landlordResponse.pagination?.total ?? (landlordResponse.users || []).length,
+        tenants: tenantResponse.pagination?.total ?? (tenantResponse.users || []).length,
+      });
+    } catch (error) {
+      const status = error.response?.status;
+      const message = status === 403
+        ? "Admin access is required to load users."
+        : error.response?.data?.message || error.message || "Unable to load users.";
+      setAdminUsersError(message);
+    } finally {
+      setAdminUsersLoading(false);
+    }
+  }, [user?.role]);
+
+  useEffect(() => {
+    if (user?.role !== "admin") return undefined;
+
+    const timeoutId = setTimeout(() => {
+      void loadAdminUsers();
+    }, 0);
+
+    return () => clearTimeout(timeoutId);
+  }, [loadAdminUsers, user?.role]);
+
   const addLog = (action, detail, kind="info") => setLog(l=>[{id:Date.now(),time:nowStr(),action,detail,kind},...l.slice(0,49)]);
   const msg = (m, k="ok") => { setToast({m,k}); setTimeout(()=>setToast(null),3000); };
   const switchAuthMode = mode => {
@@ -255,9 +303,22 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const unlockedRent = tenantUnlockedProps.reduce((sum,p)=>sum+p.rent,0);
   const tenantFirstName = user?.data?.name?.split(" ")[0] || "Tenant";
   const landFirstName = user?.data?.name?.split(" ")[0] || "Landlord";
-  const flagged = props.filter(p=>p.flagged);
-  const pending = props.filter(p=>p.approved===false);
-  const taken = props.filter(p=>p.status==="taken");
+  const totalAdminProperties = propertyPagination?.total ?? props.length;
+  const adminPropertySetComplete = !propertyPagination || props.length >= totalAdminProperties;
+  const flagged = adminPropertySetComplete ? props.filter(p=>p.status === "hidden" || p.flagged) : [];
+  const pending = adminPropertySetComplete ? props.filter(p=>p.approved===false) : [];
+  const taken = adminPropertySetComplete ? props.filter(p=>p.status === "taken") : [];
+  const available = adminPropertySetComplete ? props.filter(p=>p.status === "available") : [];
+  const hidden = adminPropertySetComplete ? props.filter(p=>p.status === "hidden") : [];
+  const approved = adminPropertySetComplete ? props.filter(p=>p.approved !== false) : [];
+  const adminPropertyStats = {
+    total: totalAdminProperties,
+    pending: adminPropertySetComplete ? pending.length : null,
+    approved: adminPropertySetComplete ? approved.length : null,
+    occupied: adminPropertySetComplete ? taken.length : null,
+    hidden: adminPropertySetComplete ? hidden.length : null,
+    available: adminPropertySetComplete ? available.length : null,
+  };
 
   // AUTH
   const doLogin = async role => {
@@ -275,6 +336,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         password: authF.password,
         role: role === "admin" ? undefined : role,
       });
+      if (nextUser.role !== "admin") clearAdminCollections();
       setProfileForm(profileFields(nextUser));
       setAuthModal(null);
       setTab(nextUser.role === "admin" ? "admin" : nextUser.role === "landlord" ? "landlord" : "tenant");
@@ -307,6 +369,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         role,
       });
       if (nextUser.role === "landlord") setProfileForm(profileFields(nextUser));
+      clearAdminCollections();
 
       if (role === "landlord") {
         setLandlords(l => [...l, nextUser.data]);
@@ -325,7 +388,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     }
   };
 
-  const logout = () => { logoutUser(); setTab("home"); msg("Signed out.","info"); };
+  const logout = () => { clearAdminCollections(); logoutUser(); setTab("home"); msg("Signed out.","info"); };
   const toggleFavorite = id => {
     setFavorites(current => {
       const next = current.includes(id) ? current.filter(item => item !== id) : [...current, id];
@@ -393,14 +456,46 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       .catch(error => msg(error.response?.data?.message || error.message, "err"));
   };
 
-  const banUser = (role, id) => {
-    const list = role==="landlord" ? landlords : tenants;
-    const u = list.find(x=>x.id===id);
-    if(role==="landlord") setLandlords(l=>l.map(x=>x.id===id?{...x,banned:!x.banned}:x));
-    else setTenants(l=>l.map(x=>x.id===id?{...x,banned:!x.banned}:x));
-    addLog(u?.banned?"User unbanned":"User banned",`${u?.name} (${role})`,"warn");
-    msg(u?.banned?"↩ User unbanned.":"🚫 User banned.","warn");
-    setConfModal(null);
+  const toggleAdminUserStatus = async (userEntry) => {
+    if (!userEntry) return;
+
+    const nextState = !userEntry.isActive;
+
+    try {
+      const updatedUser = await updateUserStatus(userEntry.id, nextState);
+      setAdminUsers(current => current.map(item => item.id === updatedUser.id ? updatedUser : item));
+      setLandlords(current => current.map(item => item.id === updatedUser.id ? updatedUser : item));
+      setTenants(current => current.map(item => item.id === updatedUser.id ? updatedUser : item));
+      addLog(nextState ? "User activated" : "User deactivated", `${updatedUser.name} (${updatedUser.role})`, "warn");
+      msg(nextState ? "✅ User activated." : "🚫 User deactivated.", nextState ? "ok" : "warn");
+    } catch (error) {
+      msg(error.response?.data?.message || error.message || "Unable to update user status.", "err");
+    } finally {
+      setConfModal(null);
+    }
+  };
+
+  const deleteAdminUser = async userEntry => {
+    if (!userEntry) return;
+
+    try {
+      await deleteUser(userEntry.id);
+      const nextUsers = adminUsers.filter(item => item.id !== userEntry.id);
+      setAdminUsers(nextUsers);
+      setLandlords(current => current.filter(item => item.id !== userEntry.id));
+      setTenants(current => current.filter(item => item.id !== userEntry.id));
+      setAdminUserCounts(current => ({
+        total: Math.max(0, current.total - 1),
+        landlords: userEntry.role === "LANDLORD" ? Math.max(0, current.landlords - 1) : current.landlords,
+        tenants: userEntry.role === "TENANT" ? Math.max(0, current.tenants - 1) : current.tenants,
+      }));
+      addLog("User deleted", `${userEntry.name} (${userEntry.role})`, "warn");
+      msg("🗑️ User deleted.", "warn");
+    } catch (error) {
+      msg(error.response?.data?.message || error.message || "Unable to delete user.", "err");
+    } finally {
+      setConfModal(null);
+    }
   };
 
   const addProp = async () => {
@@ -923,10 +1018,10 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               <div className="atb-title">HouseHunt Kenya — Admin Control Centre</div>
               <div className="atb-sub">Full control over listings, users, content & site settings.</div>
               <div className="admin-topbar-summary">
-                <span className="admin-pill">{props.length} Listings</span>
-                <span className="admin-pill">{landlords.length + tenants.length} Users</span>
-                <span className="admin-pill">{pending.length} Pending</span>
-                <span className="admin-pill">{flagged.length} Flagged</span>
+                <span className="admin-pill">{adminPropertyStats.total} Listings</span>
+                <span className="admin-pill">{adminUserCounts.total} Users</span>
+                <span className="admin-pill">{adminPropertyStats.pending ?? "—"} Pending</span>
+                <span className="admin-pill">{adminPropertyStats.hidden ?? "—"} Hidden</span>
               </div>
             </div>
           </div>
@@ -941,11 +1036,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 <div className="dsnav">
                   {[
                     ["overview","📊","Overview"],
-                    ["listings","🏠","All Listings",props.length],
+                    ["listings","🏠","All Listings",adminPropertyStats.total],
                     ["flagged","🚩","Flagged",flagged.length],
                     ["pending","⏳","Pending",pending.length],
                     ["verify","✅","Verify Taken",taken.length],
-                    ["users","👥","Users",landlords.length + tenants.length],
+                    ["users","👥","Users",adminUserCounts.total],
                     ["announce","📢","Announcements",activeAnns.length],
                     ["post","➕","Post New Listing"],
                     ["settings","⚙️","Site Settings"],
@@ -966,13 +1061,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                   <div className="admin-summary-grid">
                     <div className="admin-summary-card">
                       <div className="admin-card-title">Platform health</div>
-                      <div className="admin-card-value">{props.length} listings</div>
-                      <div className="admin-card-meta">{pending.length} pending review · {flagged.length} flagged</div>
+                      <div className="admin-card-value">{adminPropertyStats.total} listings</div>
+                      <div className="admin-card-meta">{adminPropertyStats.pending ?? "—"} pending review · {adminPropertyStats.hidden ?? "—"} hidden</div>
                     </div>
                     <div className="admin-summary-card">
                       <div className="admin-card-title">User base</div>
-                      <div className="admin-card-value">{landlords.length + tenants.length} users</div>
-                      <div className="admin-card-meta">{landlords.length} landlords · {tenants.length} tenants</div>
+                      <div className="admin-card-value">{adminUserCounts.total} users</div>
+                      <div className="admin-card-meta">{adminUserCounts.landlords} landlords · {adminUserCounts.tenants} tenants</div>
                     </div>
                     <div className="admin-summary-card">
                       <div className="admin-card-title">Content trust</div>
@@ -986,13 +1081,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     <button className="bban" onClick={()=>setAdTab("flagged")}>🚩 Review Flagged</button>
                   </div>
                   <div className="akpis">
-                    <div className="akpi"><div className="akpi-icon">🏠</div><div className="akpi-val">{props.length}</div><div className="akpi-lbl">Total Listings</div></div>
-                    <div className="akpi"><div className="akpi-icon">✓</div><div className="akpi-val grn">{props.filter(p=>p.status==="available").length}</div><div className="akpi-lbl">Available</div></div>
-                    <div className="akpi"><div className="akpi-icon">⊘</div><div className="akpi-val red">{props.filter(p=>p.status==="taken").length}</div><div className="akpi-lbl">Taken</div></div>
+                    <div className="akpi"><div className="akpi-icon">🏠</div><div className="akpi-val">{adminPropertyStats.total}</div><div className="akpi-lbl">Total Listings</div></div>
+                    <div className="akpi"><div className="akpi-icon">✓</div><div className="akpi-val grn">{adminPropertyStats.available ?? "—"}</div><div className="akpi-lbl">Available</div></div>
+                    <div className="akpi"><div className="akpi-icon">⊘</div><div className="akpi-val red">{adminPropertyStats.occupied ?? "—"}</div><div className="akpi-lbl">Taken</div></div>
                     <div className="akpi"><div className="akpi-icon">⭐</div><div className="akpi-val">{props.filter(p=>p.boosted).length}</div><div className="akpi-lbl">Boosted</div></div>
-                    <div className="akpi"><div className="akpi-icon">🚩</div><div className="akpi-val red">{flagged.length}</div><div className="akpi-lbl">Flagged</div></div>
-                    <div className="akpi"><div className="akpi-icon">👷</div><div className="akpi-val blu">{landlords.length}</div><div className="akpi-lbl">Landlords</div></div>
-                    <div className="akpi"><div className="akpi-icon">👤</div><div className="akpi-val blu">{tenants.length}</div><div className="akpi-lbl">Tenants</div></div>
+                    <div className="akpi"><div className="akpi-icon">🚩</div><div className="akpi-val red">{adminPropertyStats.hidden ?? "—"}</div><div className="akpi-lbl">Hidden</div></div>
+                    <div className="akpi"><div className="akpi-icon">👷</div><div className="akpi-val blu">{adminUserCounts.landlords}</div><div className="akpi-lbl">Landlords</div></div>
+                    <div className="akpi"><div className="akpi-icon">👤</div><div className="akpi-val blu">{adminUserCounts.tenants}</div><div className="akpi-lbl">Tenants</div></div>
                     <div className="akpi"><div className="akpi-icon">📢</div><div className="akpi-val">{activeAnns.length}</div><div className="akpi-lbl">Announcements</div></div>
                   </div>
                   <h3 style={{color:"#C4991A",marginBottom:"0.4rem",fontSize:"1.2rem"}}>Recent Activity</h3>
@@ -1085,29 +1180,54 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
                 {/* USERS */}
                 {adTab==="users" && <div className="atab">
-                  <h3>Manage Users</h3><p className="sub">Ban, restore, or review all landlords and tenants.</p>
-                  <div className="divlbl"><span style={{color:"#C4991A"}}>Landlords ({landlords.length})</span></div>
-                  {landlords.map(l=>(
-                    <div key={l.id} className="arow">
-                      <div className="dav" style={{width:38,height:38,fontSize:"0.95rem",flexShrink:0,borderRadius:"50%",background:"#B5451B",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontFamily:"Cormorant Garamond,serif",fontWeight:700}}>{l.name[0]}</div>
-                      <div className="arow-info"><div className="arow-title">{l.name}</div><div className="arow-meta">{l.email} · {props.filter(p=>p.landlordId===l.id).length} listings · Joined {l.joined}</div></div>
-                      <div className="arow-acts">
-                        {l.banned && <span className="sbadge sb-bn">🚫 Banned</span>}
-                        <button className={l.banned?"bapp":"bban"} onClick={()=>setConfModal({type:"ban",title:l.banned?"Unban User":"Ban User",msg2:l.banned?`Restore access for ${l.name}?`:`Ban ${l.name}? They cannot log in.`,onConfirm:()=>banUser("landlord",l.id)})}>{l.banned?"↩ Unban":"🚫 Ban"}</button>
-                      </div>
-                    </div>
-                  ))}
-                  <div className="divlbl" style={{marginTop:"1.3rem"}}><span style={{color:"#C4991A"}}>Tenants ({tenants.length})</span></div>
-                  {tenants.map(t=>(
-                    <div key={t.id} className="arow">
-                      <div style={{width:38,height:38,borderRadius:"50%",background:"#2D5016",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontFamily:"Cormorant Garamond,serif",fontWeight:700,fontSize:"0.95rem",flexShrink:0}}>{t.name[0]}</div>
-                      <div className="arow-info"><div className="arow-title">{t.name}</div><div className="arow-meta">{t.email} · {t.unlocked?.length||0} unlocked · Joined {t.joined}</div></div>
-                      <div className="arow-acts">
-                        {t.banned && <span className="sbadge sb-bn">🚫 Banned</span>}
-                        <button className={t.banned?"bapp":"bban"} onClick={()=>setConfModal({type:"ban",title:t.banned?"Unban User":"Ban User",msg2:t.banned?`Restore access for ${t.name}?`:`Ban ${t.name}?`,onConfirm:()=>banUser("tenant",t.id)})}>{t.banned?"↩ Unban":"🚫 Ban"}</button>
-                      </div>
-                    </div>
-                  ))}
+                  <h3>Manage Users</h3><p className="sub">Review, activate, deactivate, or remove users from the platform.</p>
+                  {adminUsersLoading && <div className="empty-adm"><p>Loading users…</p></div>}
+                  {!adminUsersLoading && adminUsersError && <div className="form-error" role="alert">{adminUsersError}</div>}
+                  {!adminUsersLoading && !adminUsersError && landlords.length === 0 && tenants.length === 0 && (
+                    <div className="empty-adm"><p>No users found.</p></div>
+                  )}
+                  {!adminUsersLoading && !adminUsersError && landlords.length > 0 && (
+                    <>
+                      <div className="divlbl"><span style={{color:"#C4991A"}}>Landlords ({adminUserCounts.landlords})</span></div>
+                      {landlords.map(l=>(
+                        <div key={l.id} className="arow">
+                          <div className="dav" style={{width:38,height:38,fontSize:"0.95rem",flexShrink:0,borderRadius:"50%",background:"#B5451B",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontFamily:"Cormorant Garamond,serif",fontWeight:700}}>{(l.name || "U").charAt(0).toUpperCase()}</div>
+                          <div className="arow-info"><div className="arow-title">{l.name}</div><div className="arow-meta">{l.email} · Joined {l.joined}</div></div>
+                          <div className="arow-acts">
+                            {!l.isActive && <span className="sbadge sb-bn">🚫 Inactive</span>}
+                            <button className={l.isActive ? "bban" : "bapp"} onClick={()=>setConfModal({
+                              type: "ban",
+                              title: l.isActive ? "Deactivate User" : "Activate User",
+                              msg2: l.isActive ? `Deactivate ${l.name}? This will revoke their login access.` : `Restore access for ${l.name}?`,
+                              onConfirm: () => toggleAdminUserStatus(l),
+                            })}>{l.isActive ? "🚫 Deactivate" : "↩ Activate"}</button>
+                            <button className="bdel" onClick={()=>setConfModal({ type:"delete", title:"Delete User", msg2:`Delete ${l.name}? This action is permanent and protected by backend rules.`, onConfirm: () => deleteAdminUser(l) })}>🗑 Delete</button>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {!adminUsersLoading && !adminUsersError && tenants.length > 0 && (
+                    <>
+                      <div className="divlbl" style={{marginTop:"1.3rem"}}><span style={{color:"#C4991A"}}>Tenants ({adminUserCounts.tenants})</span></div>
+                      {tenants.map(t=>(
+                        <div key={t.id} className="arow">
+                          <div style={{width:38,height:38,borderRadius:"50%",background:"#2D5016",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontFamily:"Cormorant Garamond,serif",fontWeight:700,fontSize:"0.95rem",flexShrink:0}}>{(t.name || "U").charAt(0).toUpperCase()}</div>
+                          <div className="arow-info"><div className="arow-title">{t.name}</div><div className="arow-meta">{t.email} · Joined {t.joined}</div></div>
+                          <div className="arow-acts">
+                            {!t.isActive && <span className="sbadge sb-bn">🚫 Inactive</span>}
+                            <button className={t.isActive ? "bban" : "bapp"} onClick={()=>setConfModal({
+                              type: "ban",
+                              title: t.isActive ? "Deactivate User" : "Activate User",
+                              msg2: t.isActive ? `Deactivate ${t.name}? This will revoke their login access.` : `Restore access for ${t.name}?`,
+                              onConfirm: () => toggleAdminUserStatus(t),
+                            })}>{t.isActive ? "🚫 Deactivate" : "↩ Activate"}</button>
+                            <button className="bdel" onClick={()=>setConfModal({ type:"delete", title:"Delete User", msg2:`Delete ${t.name}? This action is permanent and protected by backend rules.`, onConfirm: () => deleteAdminUser(t) })}>🗑 Delete</button>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
                 </div>}
 
                 {/* ANNOUNCEMENTS */}

@@ -17,6 +17,7 @@ function errorMessage(error) {
 
 export default function useProperties({ limit = 12 } = {}) {
 	const [properties, setProperties] = useState([]);
+	const [pagination, setPagination] = useState(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
 
@@ -26,6 +27,7 @@ export default function useProperties({ limit = 12 } = {}) {
 		try {
 			const result = await getProperties({ limit });
 			setProperties(result.properties);
+			setPagination(result.pagination);
 			return result;
 		} catch (requestError) {
 			setError(errorMessage(requestError));
@@ -39,7 +41,10 @@ export default function useProperties({ limit = 12 } = {}) {
 		let active = true;
 		getProperties({ limit })
 			.then(result => {
-				if (active) setProperties(result.properties);
+				if (active) {
+					setProperties(result.properties);
+					setPagination(result.pagination);
+				}
 			})
 			.catch(requestError => {
 				if (active) setError(errorMessage(requestError));
@@ -78,6 +83,7 @@ export default function useProperties({ limit = 12 } = {}) {
 
 	return {
 		properties,
+		pagination,
 		setProperties,
 		loading,
 		error,
