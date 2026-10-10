@@ -1,4 +1,15 @@
-export default function PropertyDetails({ liveProp, landlord, user, isUnlocked, settings, setPayModal, setAuthModal, closeModal }) {
+export default function PropertyDetails({
+  liveProp,
+  landlord,
+  user,
+  isUnlocked,
+  settings,
+  setPayModal,
+  setAuthModal,
+  closeModal,
+  canBook,
+  onBookRequest,
+}) {
   const KES = n => `KSh ${Number(n).toLocaleString()}`;
   const statusKey = liveProp.status === "available" ? "av" : "tk";
   const isAvailable = liveProp.status === "available";
@@ -81,6 +92,12 @@ export default function PropertyDetails({ liveProp, landlord, user, isUnlocked, 
               <h4>Contact & location locked</h4>
               <p>Unlock to reveal the exact address and landlord contact info.</p>
               <button className="bunlock" type="button" onClick={() => setPayModal({ type: "unlock", propId: liveProp.id })}>🔓 Unlock for KSh {settings.unlockFee}</button>
+            </div>
+          )}
+
+          {user?.role === "tenant" && canBook && (
+            <div className="pd-action-panel" style={{ marginTop: "1rem" }}>
+              <button className="bp" type="button" onClick={onBookRequest}>📅 Request booking</button>
             </div>
           )}
 

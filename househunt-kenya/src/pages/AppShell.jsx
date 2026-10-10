@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FiCheckCircle, FiCreditCard, FiPhone } from "react-icons/fi";
 import { useLocation, useNavigate } from "react-router-dom";
 import useAuth from "../hooks/useAuth";
+import useBookings from "../hooks/useBookings";
 import useProperties from "../hooks/useProperties";
 import { getAnnouncements } from "../services/announcementService";
 import { deleteUser, getUsers, updateUserStatus } from "../services/userService";
@@ -99,6 +100,18 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     updatePropertyStatus: updatePropertyStatusApi,
     featureProperty: featurePropertyApi,
   } = useProperties({ limit: user?.role === "admin" ? 100 : user?.role === "landlord" ? 50 : 12 });
+  const {
+    tenantBookings,
+    landlordBookings,
+    tenantLoading,
+    landlordLoading,
+    tenantError,
+    landlordError,
+    createBooking,
+    cancelBooking,
+    approveBooking,
+    rejectBooking,
+  } = useBookings();
   const [tab, setTab] = useState(initialTab);
   const [landlords, setLandlords] = useState([]);
   const [tenants, setTenants] = useState([]);
@@ -117,6 +130,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [authModal, setAuthModal] = useState(authMode ? "tenant" : null);
   const [payModal, setPayModal] = useState(null);
   const [confModal, setConfModal] = useState(null);
+  const [bookingProperty, setBookingProperty] = useState(null);
+  const [bookingFormOpen, setBookingFormOpen] = useState(false);
+  const [bookingForm, setBookingForm] = useState({ moveInDate: "", leaseMonths: "6", notes: "" });
+  const [bookingFormError, setBookingFormError] = useState("");
+  const [bookingSubmitting, setBookingSubmitting] = useState(false);
   const [search, setSearch] = useState("");
   const [budget, setBudget] = useState("");
   const [ptype, setPtype] = useState("");
@@ -263,6 +281,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
   const addLog = (action, detail, kind="info") => setLog(l=>[{id:Date.now(),time:nowStr(),action,detail,kind},...l.slice(0,49)]);
   const msg = (m, k="ok") => { setToast({m,k}); setTimeout(()=>setToast(null),3000); };
+  const bookingStatusLabel = value => String(value || "PENDING").replace(/_/g, " ").toLowerCase().replace(/\b\w/g, char => char.toUpperCase());
+  const bookingStatusTone = status => status === "PENDING" ? "sb-pd" : status === "APPROVED" ? "sb-av" : status === "REJECTED" ? "sb-fl" : status === "CANCELLED" ? "sb-bn" : "sb-tk";
   const switchAuthMode = mode => {
     setAuthF({name:"",email:"",password:"",mode});
     setAuthErr("");
@@ -596,6 +616,105 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     }
   };
 
+  const openBookingForm = property => {
+    if (!user || user.role !== "tenant") {
+      setAuthModal("tenant");
+      return;
+    }
+
+    if (!property || property.approved === false || property.status !== "available") {
+      msg("This property is not currently available for booking.", "warn");
+      return;
+    }
+
+    setBookingProperty(property);
+    setBookingForm({ moveInDate: "", leaseMonths: "6", notes: "" });
+    setBookingFormError("");
+    setBookingFormOpen(true);
+  };
+
+  const resetBookingForm = () => {
+    setBookingProperty(null);
+    setBookingForm({ moveInDate: "", leaseMonths: "6", notes: "" });
+    setBookingFormError("");
+    setBookingFormOpen(false);
+  };
+
+  const submitBooking = async event => {
+    if (event) event.preventDefault();
+
+    if (!user || user.role !== "tenant") {
+      setAuthModal("tenant");
+      return;
+    }
+
+    if (!bookingProperty) {
+      setBookingFormError("Select a property before submitting a booking request.");
+      return;
+    }
+
+    if (!bookingForm.moveInDate) {
+      setBookingFormError("Please choose a move-in date.");
+      return;
+    }
+
+    const leaseMonths = Number(bookingForm.leaseMonths);
+    if (!Number.isInteger(leaseMonths) || leaseMonths < 1) {
+      setBookingFormError("Lease duration must be at least 1 month.");
+      return;
+    }
+
+    setBookingSubmitting(true);
+    setBookingFormError("");
+
+    try {
+      const created = await createBooking({
+        propertyId: bookingProperty.id,
+        moveInDate: bookingForm.moveInDate,
+        leaseMonths,
+        notes: bookingForm.notes.trim(),
+      });
+      msg(`Booking created. Status: ${bookingStatusLabel(created?.status || "PENDING")}.`, "ok");
+      addLog("Booking requested", `${bookingProperty.title} · ${bookingForm.moveInDate}`, "info");
+      resetBookingForm();
+      await refreshProperties();
+    } catch (error) {
+      setBookingFormError(error.response?.data?.message || error.message || "Unable to submit booking.");
+    } finally {
+      setBookingSubmitting(false);
+    }
+  };
+
+  const handleTenantCancelBooking = async bookingId => {
+    try {
+      await cancelBooking(bookingId);
+      msg("Booking cancelled successfully.", "ok");
+      await refreshProperties();
+    } catch (error) {
+      msg(error.response?.data?.message || error.message || "Unable to cancel booking.", "err");
+    }
+  };
+
+  const handleApproveBooking = async bookingId => {
+    try {
+      await approveBooking(bookingId);
+      msg("Booking approved.", "ok");
+      await refreshProperties();
+    } catch (error) {
+      msg(error.response?.data?.message || error.message || "Unable to approve booking.", "err");
+    }
+  };
+
+  const handleRejectBooking = async bookingId => {
+    try {
+      await rejectBooking(bookingId);
+      msg("Booking rejected.", "ok");
+      await refreshProperties();
+    } catch (error) {
+      msg(error.response?.data?.message || error.message || "Unable to reject booking.", "err");
+    }
+  };
+
   const postAnn = async () => {
     if(!annF.title||!annF.body){ msg("Fill all fields.","warn"); return; }
     if(dirty(annF.title)||dirty(annF.body)){ msg("❌ Inappropriate content.","err"); return; }
@@ -796,6 +915,36 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                   <strong>No unlocked contacts yet.</strong> Open a listing and unlock the full contact details with a one-time M-PESA payment.
                 </div>
               )}
+
+              <div className="fcard" style={{marginTop:"1.5rem"}}>
+                <h3>My Bookings</h3>
+                <p className="sub">Requests and current booking status for your tenancy applications.</p>
+                {tenantLoading && <div className="empty-adm"><p>Loading bookings…</p></div>}
+                {!tenantLoading && tenantError && <div className="form-error" role="alert">{tenantError}</div>}
+                {!tenantLoading && !tenantError && tenantBookings.length === 0 && (
+                  <div className="empty-adm"><p>No bookings yet.</p></div>
+                )}
+                {!tenantLoading && !tenantError && tenantBookings.length > 0 && (
+                  <div style={{display:"grid",gap:"0.85rem"}}>
+                    {tenantBookings.map(booking => (
+                      <div key={booking.id} className="arow" style={{borderLeft:"3px solid rgba(196,153,26,0.7)"}}>
+                        <div className="arow-icon" style={{background:"#B5451B"}}>{(booking.property?.title || "B").slice(0,1).toUpperCase()}</div>
+                        <div className="arow-info">
+                          <div className="arow-title">{booking.property?.title || "Property booking"}</div>
+                          <div className="arow-meta">📍 {booking.property?.location || "Location not available"} · Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
+                        </div>
+                        <div className="arow-acts">
+                          <span className={`sbadge ${bookingStatusTone(booking.status)}`}>{bookingStatusLabel(booking.status)}</span>
+                          {(booking.status === "PENDING" || booking.status === "APPROVED") && (
+                            <button className="bdel" onClick={()=>handleTenantCancelBooking(booking.id)}>Cancel</button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {tenantActivity.length > 0 && (
                 <div className="tactivity">
                   <div className="tactivity-head">
@@ -862,6 +1011,39 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               <div className="lkpi"><span className="lkpi-stat amber">{myBoosted.length}</span><strong>Boosted</strong></div>
               <div className="lkpi"><span className="lkpi-stat pd">{myPending.length}</span><strong>Pending Review</strong></div>
             </div>
+          </div>
+
+          <div className="fcard" style={{marginBottom:"1.5rem"}}>
+            <h3>Booking Requests</h3>
+            <p className="sub">Manage tenant requests for properties you own.</p>
+            {landlordLoading && <div className="empty-adm"><p>Loading booking requests…</p></div>}
+            {!landlordLoading && landlordError && <div className="form-error" role="alert">{landlordError}</div>}
+            {!landlordLoading && !landlordError && landlordBookings.length === 0 && (
+              <div className="empty-adm"><p>No booking requests yet.</p></div>
+            )}
+            {!landlordLoading && !landlordError && landlordBookings.length > 0 && (
+              <div style={{display:"grid",gap:"0.85rem"}}>
+                {landlordBookings.map(booking => (
+                  <div key={booking.id} className="arow" style={{borderLeft:"3px solid rgba(39, 108, 68, 0.75)"}}>
+                    <div className="arow-icon" style={{background:"#2D5016"}}>{(booking.tenant?.firstName || booking.tenant?.name || "T").slice(0,1).toUpperCase()}</div>
+                    <div className="arow-info">
+                      <div className="arow-title">{booking.tenant?.firstName && booking.tenant?.lastName ? `${booking.tenant.firstName} ${booking.tenant.lastName}` : booking.tenant?.name || "Tenant"} · {booking.property?.title || "Property"}</div>
+                      <div className="arow-meta">📍 {booking.property?.location || "Location not available"} · Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
+                      {booking.notes && <div className="arow-meta">📝 {booking.notes}</div>}
+                    </div>
+                    <div className="arow-acts">
+                      <span className={`sbadge ${bookingStatusTone(booking.status)}`}>{bookingStatusLabel(booking.status)}</span>
+                      {booking.status === "PENDING" && (
+                        <>
+                          <button className="bapp" onClick={()=>handleApproveBooking(booking.id)}>Approve</button>
+                          <button className="bdel" onClick={()=>handleRejectBooking(booking.id)}>Reject</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <div className="dlayout">
             <div className="dside">
@@ -1392,6 +1574,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               setPayModal={setPayModal}
               setAuthModal={setAuthModal}
               closeModal={closeModal}
+              canBook={Boolean(user && user.role === "tenant" && liveProp?.status === "available" && liveProp?.approved !== false)}
+              onBookRequest={() => openBookingForm(liveProp)}
             />
             {canManage && (
               <PropertyActions
@@ -1405,6 +1589,41 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 user={user}
               />
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ─── BOOKING MODAL ─── */}
+      {bookingFormOpen && bookingProperty && (
+        <div className="mov" role="presentation" onClick={e=>e.target===e.currentTarget&&resetBookingForm()}>
+          <div ref={modalRef} className="mdl auth" role="dialog" aria-modal="true" aria-labelledby="booking-title">
+            <button className="mclose" aria-label="Close booking form" onClick={resetBookingForm}>✕</button>
+            <div className="auth-head">
+              <div className="auth-icon">📅</div>
+              <div>
+                <h2 id="booking-title" className="auth-title">Request Booking</h2>
+                <p className="auth-subtitle">{bookingProperty.title}</p>
+              </div>
+            </div>
+
+            <form onSubmit={submitBooking}>
+              <div className="fg">
+                <label>Move-in date</label>
+                <input type="date" value={bookingForm.moveInDate} onChange={e=>setBookingForm({...bookingForm, moveInDate: e.target.value})} disabled={bookingSubmitting} />
+              </div>
+              <div className="fg">
+                <label>Lease duration (months)</label>
+                <input type="number" min="1" step="1" value={bookingForm.leaseMonths} onChange={e=>setBookingForm({...bookingForm, leaseMonths: e.target.value})} disabled={bookingSubmitting} />
+              </div>
+              <div className="fg">
+                <label>Notes</label>
+                <textarea rows="4" value={bookingForm.notes} onChange={e=>setBookingForm({...bookingForm, notes: e.target.value})} disabled={bookingSubmitting} placeholder="Optional notes for the landlord" />
+              </div>
+              {bookingFormError && <div className="aerr">⚠️ {bookingFormError}</div>}
+              <button className="bp auth-submit" type="submit" disabled={bookingSubmitting} aria-busy={bookingSubmitting}>
+                {bookingSubmitting ? "Submitting booking…" : "Submit Booking Request →"}
+              </button>
+            </form>
           </div>
         </div>
       )}
