@@ -30,6 +30,13 @@ const profileFields = user => ({
 const KES = n=>`KSh ${Number(n).toLocaleString()}`;
 const nowStr = ()=>new Date().toLocaleString("en-KE",{hour12:false}).replace(","," ");
 const todayStr = ()=>new Date().toISOString().split("T")[0];
+const bookingLocation = location => {
+  if (typeof location === "string") return location;
+  if (!location || typeof location !== "object") return "";
+  return [location.estate, location.town, location.county]
+    .filter(part => typeof part === "string" && part.trim())
+    .join(", ");
+};
 const propertyTypeForApi = type => type === "House" || type === "Penthouse" ? "Apartment" : type === "Room" ? "Single Room" : type;
 const propertyPayload = (form, media) => {
   const locationParts = form.location.split(",").map(part => part.trim()).filter(Boolean);
@@ -931,7 +938,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                         <div className="arow-icon" style={{background:"#B5451B"}}>{(booking.property?.title || "B").slice(0,1).toUpperCase()}</div>
                         <div className="arow-info">
                           <div className="arow-title">{booking.property?.title || "Property booking"}</div>
-                          <div className="arow-meta">📍 {booking.property?.location || "Location not available"} · Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
+                          <div className="arow-meta">📍 {bookingLocation(booking.property?.location) || "Location not available"} · Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
                         </div>
                         <div className="arow-acts">
                           <span className={`sbadge ${bookingStatusTone(booking.status)}`}>{bookingStatusLabel(booking.status)}</span>
@@ -1028,7 +1035,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     <div className="arow-icon" style={{background:"#2D5016"}}>{(booking.tenant?.firstName || booking.tenant?.name || "T").slice(0,1).toUpperCase()}</div>
                     <div className="arow-info">
                       <div className="arow-title">{booking.tenant?.firstName && booking.tenant?.lastName ? `${booking.tenant.firstName} ${booking.tenant.lastName}` : booking.tenant?.name || "Tenant"} · {booking.property?.title || "Property"}</div>
-                      <div className="arow-meta">📍 {booking.property?.location || "Location not available"} · Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
+                      <div className="arow-meta">📍 {bookingLocation(booking.property?.location) || "Location not available"} · Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
                       {booking.notes && <div className="arow-meta">📝 {booking.notes}</div>}
                     </div>
                     <div className="arow-acts">

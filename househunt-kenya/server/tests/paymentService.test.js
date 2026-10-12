@@ -4,14 +4,12 @@ import assert from 'node:assert/strict';
 import * as paymentService from '../services/paymentService.js';
 import Payment from '../models/Payment.js';
 import Booking from '../models/Booking.js';
-import * as paymentsProvider from '../services/payments/provider.js';
 
 const originalPaymentFindOne = Payment.findOne;
 const originalPaymentCreate = Payment.create;
 const originalPaymentFind = Payment.find;
 const originalPaymentCountDocuments = Payment.countDocuments;
 const originalBookingFindById = Booking.findById;
-const originalProviderInitiate = paymentsProvider.initiatePaymentRequest;
 
 test('createPayment creates a pending payment for own approved booking', async () => {
   const created = [];
@@ -38,8 +36,6 @@ test('createPayment creates a pending payment for own approved booking', async (
     then: (resolve) => resolve(booking),
     catch: () => {},
   });
-  paymentsProvider.setInitiatePaymentRequest(async () => ({ provider: 'stub' }));
-
   const result = await paymentService.createPayment(user, {
     bookingId: '507f191e810c19729de860ea',
     currency: 'KES',
@@ -189,5 +185,4 @@ test.after(async () => {
   Payment.find = originalPaymentFind;
   Payment.countDocuments = originalPaymentCountDocuments;
     Booking.findById = originalBookingFindById;
-    paymentsProvider.setInitiatePaymentRequest(originalProviderInitiate);
 });

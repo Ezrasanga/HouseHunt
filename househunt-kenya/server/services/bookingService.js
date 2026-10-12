@@ -397,7 +397,7 @@ export async function approveBooking(id, actor) {
     throw error;
   }
 
-  if (normalizeId(property.owner) !== actor.id) {
+  if (normalizeId(property.owner) !== normalizeId(actor.id)) {
     const error = new Error('You do not have permission to approve this booking');
     error.status = 403;
     throw error;

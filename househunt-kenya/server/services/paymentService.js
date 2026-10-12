@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 import Payment from '../models/Payment.js';
 import Booking from '../models/Booking.js';
-import * as provider from './payments/provider.js';
 import * as daraja from './darajaService.js';
 
 /**
@@ -228,6 +227,7 @@ function sanitizePayment(payment) {
     currency: plain.currency,
     method: plain.method,
     status: plain.status,
+    hasStkPush: Boolean(plain.checkoutRequestId || plain.merchantRequestId),
     phone: plain.phone,
     createdAt: plain.createdAt,
     updatedAt: plain.updatedAt,
@@ -356,17 +356,6 @@ export async function createPayment(user, payload = {}) {
     method: String(payload.method).toUpperCase(),
     phone: payload.phone ? String(payload.phone).trim() : '',
     status: 'PENDING',
-  });
-
-  await provider.initiatePaymentRequest({
-    paymentId: payment._id,
-    amount: payment.amount,
-    currency: payment.currency,
-    method: payment.method,
-    phone: payment.phone,
-    bookingId: payment.booking,
-    tenantId: payment.tenant,
-    landlordId: payment.landlord,
   });
 
   return sanitizePayment(payment);
@@ -653,6 +642,7 @@ export async function initiateStkPush(user, paymentId, phoneRaw) {
   // Store provider identifiers
   payment.merchantRequestId = darajaResp.merchantRequestId || '';
   payment.checkoutRequestId = darajaResp.checkoutRequestId || '';
+  payment.phone = normalized;
   // Do not change payment.status
   await payment.save();
 
