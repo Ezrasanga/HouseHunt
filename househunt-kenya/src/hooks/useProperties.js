@@ -15,17 +15,18 @@ function errorMessage(error) {
 	return error.response?.data?.message || error.message || "Unable to load properties.";
 }
 
-export default function useProperties({ limit = 12 } = {}) {
+export default function useProperties({ limit = 12, query = {} } = {}) {
 	const [properties, setProperties] = useState([]);
 	const [pagination, setPagination] = useState(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
+	const queryKey = JSON.stringify(query);
 
 	const refresh = useCallback(async () => {
 		setLoading(true);
 		setError("");
 		try {
-			const result = await getProperties({ limit });
+			const result = await getProperties({ ...JSON.parse(queryKey), limit });
 			setProperties(result.properties);
 			setPagination(result.pagination);
 			return result;
@@ -35,11 +36,14 @@ export default function useProperties({ limit = 12 } = {}) {
 		} finally {
 			setLoading(false);
 		}
-	}, [limit]);
+	}, [limit, queryKey]);
 
 	useEffect(() => {
 		let active = true;
-		getProperties({ limit })
+		const timer = window.setTimeout(() => {
+			setLoading(true);
+			setError("");
+			getProperties({ ...JSON.parse(queryKey), limit })
 			.then(result => {
 				if (active) {
 					setProperties(result.properties);
@@ -52,9 +56,13 @@ export default function useProperties({ limit = 12 } = {}) {
 			.finally(() => {
 				if (active) setLoading(false);
 			});
+		}, 250);
 
-		return () => { active = false; };
-	}, [limit]);
+		return () => {
+			active = false;
+			window.clearTimeout(timer);
+		};
+	}, [limit, queryKey]);
 
 	const loadProperty = useCallback(async id => {
 		try {

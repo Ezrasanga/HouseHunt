@@ -7,6 +7,7 @@ import Booking from '../models/Booking.js';
 
 const originalPaymentFindOne = Payment.findOne;
 const originalPaymentCreate = Payment.create;
+const originalPaymentDeleteOne = Payment.deleteOne;
 const originalPaymentFind = Payment.find;
 const originalPaymentCountDocuments = Payment.countDocuments;
 const originalBookingFindById = Booking.findById;
@@ -52,6 +53,82 @@ test('createPayment creates a pending payment for own approved booking', async (
   assert.equal(created[0].method, 'MPESA');
   assert.equal(created[0].status, 'PENDING');
   assert.equal(booking.paymentStatus, 'UNPAID');
+});
+
+test('createPayment rejects while tenancy completion is requested', async () => {
+  const booking = {
+    _id: '507f191e810c19729de860ea',
+    tenant: 'tenant-1',
+    landlord: 'landlord-1',
+    status: 'APPROVED',
+    completionRequestedBy: 'LANDLORD',
+    paymentStatus: 'UNPAID',
+    property: { owner: 'landlord-1', price: 5000 },
+  };
+  Booking.findById = () => ({
+    populate: () => ({
+      then: resolve => resolve(booking),
+      catch: () => {},
+    }),
+  });
+
+  await assert.rejects(async () => {
+    await paymentService.createPayment({ id: 'tenant-1', role: 'TENANT' }, {
+      bookingId: '507f191e810c19729de860ea',
+      currency: 'KES',
+      method: 'MPESA',
+    });
+  }, error => {
+    assert.equal(error.status, 409);
+    assert.match(error.message, /completion request is in progress/);
+    return true;
+  });
+});
+
+test('createPayment removes a pending record if completion is requested concurrently', async () => {
+  const approvedBooking = {
+    _id: '507f191e810c19729de860ea',
+    tenant: 'tenant-1',
+    landlord: 'landlord-1',
+    status: 'APPROVED',
+    paymentStatus: 'UNPAID',
+    property: { owner: 'landlord-1', price: 5000 },
+  };
+  const updatedBooking = { ...approvedBooking, completionRequestedBy: 'LANDLORD' };
+  const createdPayment = { _id: 'payment-race', booking: approvedBooking._id, status: 'PENDING' };
+  let bookingReads = 0;
+  let deletedFilter;
+
+  Payment.findOne = async () => null;
+  Payment.create = async () => createdPayment;
+  Payment.deleteOne = async filter => {
+    deletedFilter = filter;
+    return { deletedCount: 1 };
+  };
+  Booking.findById = () => {
+    const booking = bookingReads++ === 0 ? approvedBooking : updatedBooking;
+    return {
+      populate: () => ({
+        then: resolve => resolve(booking),
+        catch: () => {},
+      }),
+      then: resolve => resolve(booking),
+      catch: () => {},
+    };
+  };
+
+  await assert.rejects(async () => {
+    await paymentService.createPayment({ id: 'tenant-1', role: 'TENANT' }, {
+      bookingId: approvedBooking._id,
+      currency: 'KES',
+      method: 'MPESA',
+    });
+  }, error => {
+    assert.equal(error.status, 409);
+    assert.match(error.message, /booking changed while payment was being created/);
+    return true;
+  });
+  assert.deepEqual(deletedFilter, { _id: createdPayment._id, status: 'PENDING' });
 });
 
 test('createPayment rejects an amount that differs from the booking balance', async () => {
@@ -182,6 +259,7 @@ test('createPayment rejects non-numeric amounts', async () => {
 test.after(async () => {
   Payment.findOne = originalPaymentFindOne;
   Payment.create = originalPaymentCreate;
+  Payment.deleteOne = originalPaymentDeleteOne;
   Payment.find = originalPaymentFind;
   Payment.countDocuments = originalPaymentCountDocuments;
     Booking.findById = originalBookingFindById;

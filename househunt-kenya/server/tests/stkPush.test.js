@@ -39,12 +39,56 @@ test('invalid phone number rejected', async () => {
   const user = { id: 'tenant-1', role: 'TENANT' };
   const payment = { _id: 'p1', tenant: 'tenant-1', booking: 'b1', method: 'MPESA', status: 'PENDING', amount: 1000, currency: 'KES', save: async () => {} };
   Payment.findById = async () => payment;
-  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1' });
+  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1', status: 'APPROVED' });
 
   await assert.rejects(async () => {
     await paymentService.initiateStkPush(user, 'p1', '12345');
   }, (err) => {
     assert.equal(err.status, 400);
+    return true;
+  });
+});
+
+test('cancelled booking cannot start a new STK Push', async () => {
+  const user = { id: 'tenant-1', role: 'TENANT' };
+  const payment = { _id: 'p-cancelled', tenant: 'tenant-1', booking: 'b-cancelled', method: 'MPESA', status: 'PENDING', amount: 1000, currency: 'KES', save: async () => {} };
+  Payment.findById = async () => payment;
+  Booking.findById = async () => ({ _id: 'b-cancelled', tenant: 'tenant-1', status: 'CANCELLED' });
+
+  await assert.rejects(async () => {
+    await paymentService.initiateStkPush(user, 'p-cancelled', '0712345678');
+  }, error => {
+    assert.equal(error.status, 409);
+    assert.match(error.message, /approved bookings/);
+    return true;
+  });
+});
+
+test('booking with a completion request cannot start a new STK Push', async () => {
+  const user = { id: 'tenant-1', role: 'TENANT' };
+  const payment = {
+    _id: 'p-completion',
+    tenant: 'tenant-1',
+    booking: 'b-completion',
+    method: 'MPESA',
+    status: 'PENDING',
+    amount: 1000,
+    currency: 'KES',
+    save: async () => {},
+  };
+  Payment.findById = async () => payment;
+  Booking.findById = async () => ({
+    _id: 'b-completion',
+    tenant: 'tenant-1',
+    status: 'APPROVED',
+    completionRequestedBy: 'LANDLORD',
+  });
+
+  await assert.rejects(async () => {
+    await paymentService.initiateStkPush(user, payment._id, '0712345678');
+  }, error => {
+    assert.equal(error.status, 409);
+    assert.match(error.message, /completion request is in progress/);
     return true;
   });
 });
@@ -56,15 +100,17 @@ test('amount is taken from DB not request body and identifiers stored', async ()
     _id: 'p1', tenant: 'tenant-1', booking: 'b1', method: 'MPESA', status: 'PENDING', amount: 1500, currency: 'KES', save: async function () { saved = this; }
   };
   Payment.findById = async () => payment;
-  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1' });
+  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1', status: 'APPROVED' });
 
   // Ensure env vars present for daraja
   const origShort = process.env.MPESA_SHORTCODE;
   const origPass = process.env.MPESA_PASSKEY;
   const origCall = process.env.MPESA_CALLBACK_URL;
+  const origEnv = process.env.MPESA_ENV;
   process.env.MPESA_SHORTCODE = process.env.MPESA_SHORTCODE || '123456';
   process.env.MPESA_PASSKEY = process.env.MPESA_PASSKEY || 'passkey';
-  process.env.MPESA_CALLBACK_URL = process.env.MPESA_CALLBACK_URL || 'https://example.com/callback';
+  process.env.MPESA_CALLBACK_URL = 'https://example.com/callback';
+  process.env.MPESA_ENV = 'sandbox';
   process.env.MPESA_CONSUMER_KEY = process.env.MPESA_CONSUMER_KEY || 'ck';
   process.env.MPESA_CONSUMER_SECRET = process.env.MPESA_CONSUMER_SECRET || 'cs';
 
@@ -81,6 +127,7 @@ test('amount is taken from DB not request body and identifiers stored', async ()
   process.env.MPESA_SHORTCODE = origShort;
   process.env.MPESA_PASSKEY = origPass;
   process.env.MPESA_CALLBACK_URL = origCall;
+  process.env.MPESA_ENV = origEnv;
   // leave consumer key/secret as they may be global; not restoring to avoid clobbering other tests
 });
 
@@ -88,7 +135,7 @@ test('missing daraja config handled safely', async () => {
   const user = { id: 'tenant-1', role: 'TENANT' };
   const payment = { _id: 'p1', tenant: 'tenant-1', booking: 'b1', method: 'MPESA', status: 'PENDING', amount: 1000, currency: 'KES', save: async () => {} };
   Payment.findById = async () => payment;
-  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1' });
+  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1', status: 'APPROVED' });
 
   const origShort = process.env.MPESA_SHORTCODE;
   const origPass = process.env.MPESA_PASSKEY;
@@ -113,15 +160,17 @@ test('oauth failure handled safely', async () => {
   const user = { id: 'tenant-1', role: 'TENANT' };
   const payment = { _id: 'p1', tenant: 'tenant-1', booking: 'b1', method: 'MPESA', status: 'PENDING', amount: 1000, currency: 'KES', save: async () => {} };
   Payment.findById = async () => payment;
-  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1' });
+  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1', status: 'APPROVED' });
 
   // Ensure daraja config present so the flow reaches OAuth call
   const origShort = process.env.MPESA_SHORTCODE;
   const origPass = process.env.MPESA_PASSKEY;
   const origCall = process.env.MPESA_CALLBACK_URL;
+  const origEnv = process.env.MPESA_ENV;
   process.env.MPESA_SHORTCODE = process.env.MPESA_SHORTCODE || '123456';
   process.env.MPESA_PASSKEY = process.env.MPESA_PASSKEY || 'passkey';
-  process.env.MPESA_CALLBACK_URL = process.env.MPESA_CALLBACK_URL || 'https://example.com/callback';
+  process.env.MPESA_CALLBACK_URL = 'https://example.com/callback';
+  process.env.MPESA_ENV = 'sandbox';
   process.env.MPESA_CONSUMER_KEY = process.env.MPESA_CONSUMER_KEY || 'ck';
   process.env.MPESA_CONSUMER_SECRET = process.env.MPESA_CONSUMER_SECRET || 'cs';
 
@@ -139,6 +188,7 @@ test('oauth failure handled safely', async () => {
   process.env.MPESA_SHORTCODE = origShort;
   process.env.MPESA_PASSKEY = origPass;
   process.env.MPESA_CALLBACK_URL = origCall;
+  process.env.MPESA_ENV = origEnv;
 });
 
 test.after(() => {

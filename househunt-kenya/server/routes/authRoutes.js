@@ -16,9 +16,23 @@ const loginLimiter = rateLimit({
 		errors: [{ field: 'email', message: 'Login rate limit exceeded' }],
 	},
 });
+const passwordResetLimiter = rateLimit({
+	windowMs: 15 * 60 * 1000,
+	limit: 5,
+	standardHeaders: 'draft-7',
+	legacyHeaders: false,
+	message: {
+		success: false,
+		message: 'Too many password reset attempts. Please try again later.',
+		data: null,
+		errors: [{ field: 'email', message: 'Password reset rate limit exceeded' }],
+	},
+});
 
 router.post('/login', loginLimiter, authController.login);
 router.post('/register', authController.register);
+router.post('/password-reset/request', passwordResetLimiter, authController.requestPasswordResetLink);
+router.post('/password-reset/complete', passwordResetLimiter, authController.completePasswordReset);
 router.get('/profile', authenticate, authController.profile);
 
 export default router;

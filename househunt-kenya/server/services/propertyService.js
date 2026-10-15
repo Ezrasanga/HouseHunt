@@ -1,4 +1,6 @@
 import Property from '../models/Property.js';
+import Booking from '../models/Booking.js';
+import Payment from '../models/Payment.js';
 import User from '../models/User.js';
 
 export function normalizeId(value) {
@@ -46,6 +48,62 @@ function buildPagination(page, limit, total) {
   };
 }
 
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function searchPattern(value) {
+  return new RegExp(escapeRegex(String(value).trim()), 'i');
+}
+
+function createPropertyLifecycleError(message) {
+  const error = new Error(message);
+  error.status = 409;
+  return error;
+}
+
+async function assertPropertyCanBeMadeAvailable(propertyId) {
+  const activeBooking = await Booking.exists({
+    property: propertyId,
+    status: 'APPROVED',
+  });
+  if (activeBooking) {
+    throw createPropertyLifecycleError(
+      'This property has an approved booking and cannot be marked available until that booking is completed or cancelled.'
+    );
+  }
+
+  const paidBooking = await Booking.exists({
+    property: propertyId,
+    status: { $ne: 'COMPLETED' },
+    $or: [
+      { paymentStatus: { $in: ['PAID', 'PARTIAL'] } },
+      { amountPaid: { $gt: 0 } },
+    ],
+  });
+  if (paidBooking) {
+    throw createPropertyLifecycleError(
+      'This property has a paid booking and cannot be marked available until that booking is completed.'
+    );
+  }
+
+  const bookingIds = await Booking.distinct('_id', {
+    property: propertyId,
+    status: { $ne: 'COMPLETED' },
+  });
+  if (!bookingIds.length) return;
+
+  const unresolvedPayment = await Payment.exists({
+    booking: { $in: bookingIds },
+    status: { $in: ['PENDING', 'SUCCESS'] },
+  });
+  if (unresolvedPayment) {
+    throw createPropertyLifecycleError(
+      'This property has a pending or successful payment and cannot be marked available until its booking is resolved.'
+    );
+  }
+}
+
 function parseBoolean(value) {
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value === 'boolean') return value;
@@ -60,10 +118,16 @@ function parseBoolean(value) {
 function buildPublicFilter(query = {}) {
   const filter = { isApproved: true, status: { $ne: 'HIDDEN' } };
 
-  if (query.county) filter['location.county'] = new RegExp(String(query.county), 'i');
-  if (query.town) filter['location.town'] = new RegExp(String(query.town), 'i');
-  if (query.estate) filter['location.estate'] = new RegExp(String(query.estate), 'i');
-  if (query.propertyType) filter.propertyType = String(query.propertyType);
+  if (query.county) filter['location.county'] = searchPattern(query.county);
+  if (query.town) filter['location.town'] = searchPattern(query.town);
+  if (query.estate) filter['location.estate'] = searchPattern(query.estate);
+  if (query.propertyType) {
+    const propertyTypes = ['Apartment', 'Bedsitter', 'Single Room', 'Studio', 'Maisonette', 'Hostel', 'Office', 'Shop', 'Warehouse'];
+    const requestedType = String(query.propertyType).trim();
+    if (requestedType === 'House' || requestedType === 'Penthouse') filter.propertyType = 'Apartment';
+    else if (requestedType === 'Room') filter.propertyType = 'Single Room';
+    else if (propertyTypes.includes(requestedType)) filter.propertyType = requestedType;
+  }
   if (query.minPrice !== undefined) filter.price = { ...filter.price, $gte: Number(query.minPrice) };
   if (query.maxPrice !== undefined) filter.price = { ...filter.price, $lte: Number(query.maxPrice) };
   if (query.bedrooms !== undefined) filter.bedrooms = Number(query.bedrooms);
@@ -77,7 +141,7 @@ function buildPublicFilter(query = {}) {
   }
 
   if (query.search) {
-    const searchRegex = new RegExp(String(query.search), 'i');
+    const searchRegex = searchPattern(String(query.search).slice(0, 120));
     filter.$or = [
       { title: searchRegex },
       { description: searchRegex },
@@ -91,7 +155,7 @@ function buildPublicFilter(query = {}) {
 }
 
 export async function listProperties(query = {}, viewer = null) {
-  const page = Math.max(1, parseInt(query.page, 10) || 1);
+  const page = Math.min(100000, Math.max(1, parseInt(query.page, 10) || 1));
   const limit = Math.min(50, Math.max(1, parseInt(query.limit, 10) || 12));
   const skip = (page - 1) * limit;
 
@@ -105,10 +169,28 @@ export async function listProperties(query = {}, viewer = null) {
     filter.owner = viewer.id;
   }
 
+  if (!isAdmin && !isLandlord) {
+    const numericFilters = ['minPrice', 'maxPrice', 'bedrooms', 'bathrooms'];
+    for (const field of numericFilters) {
+      if (query[field] === undefined) continue;
+      const value = Number(query[field]);
+      if (!Number.isFinite(value) || value < 0) {
+        const error = new Error(`${field} must be a valid non-negative number`);
+        error.status = 400;
+        throw error;
+      }
+    }
+    if (query.minPrice !== undefined && query.maxPrice !== undefined && Number(query.minPrice) > Number(query.maxPrice)) {
+      const error = new Error('Minimum price cannot exceed maximum price');
+      error.status = 400;
+      throw error;
+    }
+  }
+
   const [properties, total] = await Promise.all([
     Property.find(filter)
       .populate('owner', 'firstName lastName profileImage')
-      .sort({ createdAt: -1 })
+      .sort(isAdmin || isLandlord ? { createdAt: -1 } : { featured: -1, createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
@@ -230,6 +312,16 @@ export async function updateProperty(id, actor, payload = {}) {
     throw error;
   }
 
+  const activeBooking = await Booking.exists({
+    property: property._id,
+    status: { $in: ['PENDING', 'APPROVED'] },
+  });
+  if (property.status === 'OCCUPIED' || activeBooking) {
+    throw createPropertyLifecycleError(
+      'This property cannot be edited while it has an active booking or is marked occupied.'
+    );
+  }
+
   const validation = validatePropertyInput(payload);
   if (!validation.success) {
     const error = new Error('Validation failed');
@@ -243,16 +335,30 @@ export async function updateProperty(id, actor, payload = {}) {
     blockedFields.forEach((field) => { delete validation.data[field]; });
   }
 
-  Object.assign(property, validation.data);
-
+  const updates = { ...validation.data };
   if (!isAdmin && property.isApproved) {
-    property.isApproved = false;
-    property.approvedBy = null;
-    property.status = 'PENDING';
+    updates.isApproved = false;
+    updates.approvedBy = null;
+    updates.status = 'PENDING';
   }
 
-  await property.save();
-  const populated = await Property.findById(property._id).populate('owner', 'firstName lastName profileImage').lean();
+  const updatedProperty = await Property.findOneAndUpdate(
+    {
+      _id: property._id,
+      owner: property.owner,
+      status: property.status,
+      isApproved: property.isApproved,
+    },
+    { $set: updates },
+    { new: true, runValidators: true }
+  );
+  if (!updatedProperty) {
+    throw createPropertyLifecycleError(
+      'The property changed while the edit was being saved. Refresh and try again.'
+    );
+  }
+
+  const populated = await Property.findById(updatedProperty._id).populate('owner', 'firstName lastName profileImage').lean();
   return { property: sanitizeProperty(populated) };
 }
 
@@ -291,8 +397,26 @@ export async function deleteProperty(id, actor) {
     throw error;
   }
 
-  await property.deleteOne();
-  return { property: sanitizeProperty(property) };
+  const hasBookingHistory = await Booking.exists({ property: property._id });
+  if (hasBookingHistory) {
+    throw createPropertyLifecycleError(
+      'This property cannot be deleted because it has booking history. Contact an administrator to hide it and preserve booking and payment records.'
+    );
+  }
+
+  const deletedProperty = await Property.findOneAndDelete({
+    _id: property._id,
+    owner: property.owner,
+    status: property.status,
+    isApproved: property.isApproved,
+  });
+  if (!deletedProperty) {
+    throw createPropertyLifecycleError(
+      'The property changed while deletion was being processed. Refresh and try again.'
+    );
+  }
+
+  return { property: sanitizeProperty(deletedProperty) };
 }
 
 export async function approveProperty(id, actor, payload = {}) {
@@ -316,17 +440,49 @@ export async function approveProperty(id, actor, payload = {}) {
   }
 
   const isApproved = Boolean(payload?.isApproved);
-  property.isApproved = isApproved;
-  property.approvedBy = isApproved ? actor.id : null;
-  if (isApproved && property.status === 'PENDING') {
-    property.status = 'AVAILABLE';
-  }
-  if (!isApproved) {
-    property.status = property.status === 'AVAILABLE' ? 'PENDING' : property.status;
+  const activeBooking = await Booking.exists({
+    property: property._id,
+    status: 'APPROVED',
+  });
+  if (activeBooking && Boolean(property.isApproved) !== isApproved) {
+    throw createPropertyLifecycleError(
+      'Property approval cannot be changed while an approved booking is active.'
+    );
   }
 
-  await property.save();
-  const populated = await Property.findById(property._id).populate('owner', 'firstName lastName profileImage').lean();
+  let status = property.status;
+  if (isApproved && property.status === 'PENDING') {
+    status = 'AVAILABLE';
+  }
+  if (!isApproved) {
+    status = property.status === 'AVAILABLE' ? 'PENDING' : property.status;
+  }
+  if (status === 'AVAILABLE') {
+    await assertPropertyCanBeMadeAvailable(property._id);
+  }
+
+  const updatedProperty = await Property.findOneAndUpdate(
+    {
+      _id: property._id,
+      status: property.status,
+      isApproved: property.isApproved,
+    },
+    {
+      $set: {
+        isApproved,
+        approvedBy: isApproved ? actor.id : null,
+        status,
+      },
+    },
+    { new: true, runValidators: true }
+  );
+  if (!updatedProperty) {
+    throw createPropertyLifecycleError(
+      'The property changed while approval was being updated. Refresh and try again.'
+    );
+  }
+
+  const populated = await Property.findById(updatedProperty._id).populate('owner', 'firstName lastName profileImage').lean();
   return { property: sanitizeProperty(populated) };
 }
 
@@ -358,9 +514,22 @@ export async function updatePropertyStatus(id, actor, payload = {}) {
     throw error;
   }
 
-  property.status = newStatus;
-  await property.save();
-  const populated = await Property.findById(property._id).populate('owner', 'firstName lastName profileImage').lean();
+  if (newStatus === 'AVAILABLE') {
+    await assertPropertyCanBeMadeAvailable(property._id);
+  }
+
+  const updatedProperty = await Property.findOneAndUpdate(
+    { _id: property._id, status: property.status },
+    { $set: { status: newStatus } },
+    { new: true, runValidators: true }
+  );
+  if (!updatedProperty) {
+    throw createPropertyLifecycleError(
+      'The property changed while its status was being updated. Refresh and try again.'
+    );
+  }
+
+  const populated = await Property.findById(updatedProperty._id).populate('owner', 'firstName lastName profileImage').lean();
   return { property: sanitizeProperty(populated) };
 }
 

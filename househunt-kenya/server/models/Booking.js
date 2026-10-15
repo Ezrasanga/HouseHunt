@@ -44,6 +44,11 @@ const bookingSchema = new mongoose.Schema(
       min: [0, 'Amount paid cannot be negative'],
       default: 0,
     },
+    settledPaymentIds: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Payment' }],
+      default: [],
+      select: false,
+    },
     currency: {
       type: String,
       enum: ['KES', 'USD', 'EUR'],
@@ -57,11 +62,38 @@ const bookingSchema = new mongoose.Schema(
       default: 'PENDING',
       index: true,
     },
+    completionRequestedBy: {
+      type: String,
+      enum: ['TENANT', 'LANDLORD', null],
+      default: null,
+    },
+    completionRequestedAt: {
+      type: Date,
+      default: null,
+    },
+    completedAt: {
+      type: Date,
+      default: null,
+    },
     paymentStatus: {
       type: String,
       enum: ['UNPAID', 'PARTIAL', 'PAID'],
       default: 'UNPAID',
       index: true,
+    },
+    isTestData: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    testDataMarkedAt: {
+      type: Date,
+      default: null,
+    },
+    testDataMarkedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
     },
     notes: {
       type: String,

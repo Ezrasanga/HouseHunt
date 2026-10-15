@@ -18,7 +18,13 @@ function safeNow() {
 
 function getBaseUrl() {
   const env = (process.env.MPESA_ENV || 'sandbox').toLowerCase();
-  return ENV_MAP[env] || ENV_MAP.sandbox;
+  const baseUrl = ENV_MAP[env];
+  if (!baseUrl) {
+    const error = new Error('MPESA_ENV must be either sandbox or production');
+    error.status = 500;
+    throw error;
+  }
+  return baseUrl;
 }
 
 function buildAuthHeader(consumerKey, consumerSecret) {
@@ -46,6 +52,7 @@ let httpGet = async function (url, headers = {}) {
       });
     });
 
+    req.setTimeout(15000, () => req.destroy(new Error('Daraja OAuth request timed out')));
     req.on('error', (err) => reject(err));
     req.end();
   });
@@ -148,6 +155,7 @@ let httpPost = async function (url, headers = {}, body = {}) {
       });
     });
 
+    req.setTimeout(15000, () => req.destroy(new Error('Daraja STK request timed out')));
     req.on('error', (err) => reject(err));
     req.write(payload);
     req.end();
@@ -159,14 +167,22 @@ export function __setHttpPost(fn) {
 }
 
 function makeTimestamp(date = new Date()) {
-  const pad = (n) => String(n).padStart(2, '0');
-  const YYYY = date.getFullYear();
-  const MM = pad(date.getMonth() + 1);
-  const DD = pad(date.getDate());
-  const hh = pad(date.getHours());
-  const mm = pad(date.getMinutes());
-  const ss = pad(date.getSeconds());
-  return `${YYYY}${MM}${DD}${hh}${mm}${ss}`;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Africa/Nairobi',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(date)
+      .filter(part => part.type !== 'literal')
+      .map(part => [part.type, part.value])
+  );
+  return `${parts.year}${parts.month}${parts.day}${parts.hour}${parts.minute}${parts.second}`;
 }
 
 export async function initiateSTKPush({ amount, phone, accountReference, transactionDesc }) {
@@ -178,6 +194,25 @@ export async function initiateSTKPush({ amount, phone, accountReference, transac
     const err = new Error('MPESA_SHORTCODE, MPESA_PASSKEY and MPESA_CALLBACK_URL must be configured');
     err.status = 500;
     throw err;
+  }
+
+  let parsedCallbackUrl;
+  try {
+    parsedCallbackUrl = new URL(callbackUrl);
+  } catch {
+    const error = new Error('MPESA_CALLBACK_URL must be a valid public HTTPS URL');
+    error.status = 500;
+    throw error;
+  }
+  if (parsedCallbackUrl.protocol !== 'https:') {
+    const error = new Error('MPESA_CALLBACK_URL must use HTTPS');
+    error.status = 500;
+    throw error;
+  }
+  if (!Number.isInteger(Number(amount)) || Number(amount) <= 0) {
+    const error = new Error('STK Push amount must be a positive whole number of KES');
+    error.status = 400;
+    throw error;
   }
 
   const token = await getAccessToken();
@@ -235,5 +270,94 @@ export async function initiateSTKPush({ amount, phone, accountReference, transac
   const checkoutRequestId = parsed.CheckoutRequestID || parsed.checkoutRequestId || '';
   const responseDescription = parsed.ResponseDescription || parsed.responseDescription || parsed.CustomerMessage || '';
 
+  if (!merchantRequestId || !checkoutRequestId) {
+    const error = new Error('Daraja STK response missing request identifiers');
+    error.status = 502;
+    throw error;
+  }
+
   return { merchantRequestId, checkoutRequestId, responseDescription, raw: parsed };
+}
+
+async function performSTKPushQuery({ checkoutRequestId }) {
+  const shortcode = process.env.MPESA_SHORTCODE;
+  const passkey = process.env.MPESA_PASSKEY;
+
+  if (!shortcode || !passkey) {
+    const error = new Error('MPESA_SHORTCODE and MPESA_PASSKEY must be configured');
+    error.status = 500;
+    throw error;
+  }
+  if (!checkoutRequestId || typeof checkoutRequestId !== 'string') {
+    const error = new Error('A valid CheckoutRequestID is required');
+    error.status = 400;
+    throw error;
+  }
+
+  const token = await getAccessToken();
+  const timestamp = makeTimestamp();
+  const password = Buffer.from(`${shortcode}${passkey}${timestamp}`, 'utf8').toString('base64');
+  const url = `${getBaseUrl()}/mpesa/stkpushquery/v1/query`;
+  const payload = {
+    BusinessShortCode: shortcode,
+    Password: password,
+    Timestamp: timestamp,
+    CheckoutRequestID: checkoutRequestId,
+  };
+
+  let response;
+  try {
+    response = await httpPost(url, { Authorization: `Bearer ${token}` }, payload);
+  } catch {
+    const error = new Error('Failed to reach Daraja STK query endpoint');
+    error.status = 502;
+    throw error;
+  }
+
+  if (!response || typeof response.body !== 'string') {
+    const error = new Error('Invalid response from Daraja STK query');
+    error.status = 502;
+    throw error;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(response.body);
+  } catch {
+    const error = new Error('Malformed JSON from Daraja STK query');
+    error.status = 502;
+    throw error;
+  }
+
+  if (response.statusCode !== 200 || String(parsed.ResponseCode ?? '') !== '0') {
+    const message = parsed.errorMessage || parsed.ResponseDescription || parsed.error || 'Daraja STK query failed';
+    const error = new Error(`Daraja STK query failed: ${message}`);
+    error.status = 502;
+    throw error;
+  }
+
+  const parsedResultCode = parsed.ResultCode === undefined || parsed.ResultCode === null || parsed.ResultCode === ''
+    ? null
+    : Number(parsed.ResultCode);
+
+  return {
+    merchantRequestId: parsed.MerchantRequestID || '',
+    checkoutRequestId: parsed.CheckoutRequestID || '',
+    resultCode: Number.isFinite(parsedResultCode) ? parsedResultCode : null,
+    resultDescription: parsed.ResultDesc || parsed.ResultDescription || parsed.ResponseDescription || '',
+  };
+}
+
+let stkQuery = performSTKPushQuery;
+
+export async function querySTKPush(params) {
+  return stkQuery(params);
+}
+
+export function __setStkQuery(fn) {
+  stkQuery = fn;
+}
+
+export function __resetStkQuery() {
+  stkQuery = performSTKPushQuery;
 }

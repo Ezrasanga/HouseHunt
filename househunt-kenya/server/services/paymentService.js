@@ -39,11 +39,7 @@ export async function handleMpesaCallback(payload = {}) {
     return { success: true, message: 'Payment not found' };
   }
 
-  // Idempotency: if already terminal, do not change state
-  if (payment.status === 'SUCCESS') {
-    return { success: true, message: 'Already processed' };
-  }
-  if (payment.status === 'FAILED') {
+  if (payment.status === 'SUCCESS' || (payment.status === 'FAILED' && resultCode !== 0)) {
     return { success: true, message: 'Already processed' };
   }
 
@@ -100,35 +96,48 @@ export async function handleMpesaCallback(payload = {}) {
     }
   }
 
+  const providerResult = await daraja.querySTKPush({ checkoutRequestId });
+  if (
+    providerResult.checkoutRequestId !== checkoutRequestId ||
+    providerResult.merchantRequestId !== merchantRequestId ||
+    providerResult.resultCode !== resultCode
+  ) {
+    console.warn('MPESA callback: Daraja verification mismatch for', checkoutRequestId);
+    return { success: true, message: 'Daraja verification pending' };
+  }
+
   if (resultCode !== 0) {
-    payment.merchantRequestId = merchantRequestId || payment.merchantRequestId;
-    payment.checkoutRequestId = checkoutRequestId || payment.checkoutRequestId;
-    payment.mpesaReceipt = mpesaReceipt || payment.mpesaReceipt || '';
-    if (parsedDate) {
-      payment.transactionDate = parsedDate;
-    }
-    payment.status = 'FAILED';
-    await payment.save();
+    const update = {
+      status: 'FAILED',
+      merchantRequestId,
+      checkoutRequestId,
+    };
+    if (mpesaReceipt) update.mpesaReceipt = mpesaReceipt;
+    if (parsedDate) update.transactionDate = parsedDate;
+    await Payment.updateOne(
+      { _id: payment._id, status: 'PENDING', checkoutRequestId, merchantRequestId },
+      { $set: update }
+    );
     console.warn('MPESA callback: Daraja resultCode != 0 for', checkoutRequestId);
     return { success: true, message: 'Transaction failed' };
   }
 
-  payment.merchantRequestId = merchantRequestId || payment.merchantRequestId;
-  payment.checkoutRequestId = checkoutRequestId || payment.checkoutRequestId;
-  payment.mpesaReceipt = mpesaReceipt || payment.mpesaReceipt || '';
-  if (parsedDate) {
-    payment.transactionDate = parsedDate;
-  }
-  payment.status = 'SUCCESS';
-  await payment.save();
-
   const bookingPaid = await ensureBookingPaid(payment);
   if (!bookingPaid) {
-    payment.status = 'PENDING';
-    await payment.save();
     return { success: true, message: 'Booking reconciliation pending' };
   }
 
+  const update = {
+    status: 'SUCCESS',
+    merchantRequestId,
+    checkoutRequestId,
+    mpesaReceipt,
+  };
+  if (parsedDate) update.transactionDate = parsedDate;
+  await Payment.updateOne(
+    { _id: payment._id, checkoutRequestId, merchantRequestId, status: { $in: ['PENDING', 'FAILED'] } },
+    { $set: update }
+  );
   return { success: true, message: 'Payment reconciled' };
 }
 
@@ -149,13 +158,13 @@ function normalizeId(value) {
 function normalizePhone(value) {
   if (!value) return null;
   const raw = String(value).trim();
-  if (/^0(7|1)\d{8}$/.test(raw)) {
+  if (/^0[17]\d{8}$/.test(raw)) {
     return `254${raw.slice(1)}`;
   }
-  if (/^\+2547\d{8}$/.test(raw)) {
+  if (/^\+254[17]\d{8}$/.test(raw)) {
     return raw.slice(1);
   }
-  if (/^2547\d{8}$/.test(raw)) {
+  if (/^254[17]\d{8}$/.test(raw)) {
     return raw;
   }
   return null;
@@ -178,19 +187,46 @@ function isAmountEqual(a, b) {
 async function ensureBookingPaid(payment) {
   try {
     const bookingId = payment.booking?._id || payment.booking;
-    if (!bookingId) return false;
-    const booking = await Booking.findById(bookingId);
-    if (!booking) return false;
-    if (String(booking._id) !== String(bookingId)) return false;
-    const amountPaid = Number(booking.amountPaid || 0) + Number(payment.amount || 0);
-    booking.amountPaid = Number.isFinite(amountPaid) ? amountPaid : booking.amountPaid;
-    const totalDue = Number(booking.totalDue);
-    booking.paymentStatus = Number.isFinite(totalDue) && totalDue > 0 && booking.amountPaid < totalDue ? 'PARTIAL' : 'PAID';
-    await booking.save();
-    return true;
+    if (!bookingId || !payment._id || !Number.isFinite(Number(payment.amount)) || Number(payment.amount) <= 0) return false;
+
+    const result = await Booking.updateOne(
+      { _id: bookingId, status: 'APPROVED', settledPaymentIds: { $ne: payment._id } },
+      {
+        $inc: { amountPaid: Number(payment.amount) },
+        $addToSet: { settledPaymentIds: payment._id },
+      }
+    );
+    if (result.modifiedCount === 0) {
+      const alreadySettled = await Booking.exists({
+        _id: bookingId,
+        settledPaymentIds: payment._id,
+      });
+      if (!alreadySettled) return false;
+    }
+
+    const statusResult = await Booking.updateOne(
+      { _id: bookingId, status: 'APPROVED' },
+      [{
+        $set: {
+          paymentStatus: {
+            $cond: [
+              {
+                $and: [
+                  { $gt: [{ $ifNull: ['$totalDue', 0] }, 0] },
+                  { $lt: ['$amountPaid', '$totalDue'] },
+                ],
+              },
+              'PARTIAL',
+              'PAID',
+            ],
+          },
+        },
+      }]
+    );
+    return result.modifiedCount > 0 || statusResult.matchedCount > 0;
   } catch (e) {
     console.warn('MPESA callback: failed to ensure booking PAID', e && e.message);
-    return false;
+    throw e;
   }
 }
 
@@ -310,6 +346,11 @@ export async function createPayment(user, payload = {}) {
     error.status = 400;
     throw error;
   }
+  if (booking.completionRequestedBy) {
+    const error = new Error('A tenancy completion request is in progress. Resolve it before starting another payment.');
+    error.status = 409;
+    throw error;
+  }
 
   if (booking.paymentStatus === 'PAID') {
     const error = new Error('No further payment is required for a paid booking');
@@ -357,6 +398,14 @@ export async function createPayment(user, payload = {}) {
     phone: payload.phone ? String(payload.phone).trim() : '',
     status: 'PENDING',
   });
+
+  const currentBooking = await Booking.findById(booking._id);
+  if (!currentBooking || currentBooking.status !== 'APPROVED' || currentBooking.completionRequestedBy) {
+    await Payment.deleteOne({ _id: payment._id, status: 'PENDING' });
+    const error = new Error('The booking changed while payment was being created. Refresh and try again.');
+    error.status = 409;
+    throw error;
+  }
 
   return sanitizePayment(payment);
 }
@@ -570,6 +619,17 @@ export async function initiateStkPush(user, paymentId, phoneRaw) {
     throw error;
   }
 
+  if (booking.status !== 'APPROVED') {
+    const error = new Error('STK Push may only be initiated for approved bookings');
+    error.status = 409;
+    throw error;
+  }
+  if (booking.completionRequestedBy) {
+    const error = new Error('A tenancy completion request is in progress. Resolve it before starting another payment.');
+    error.status = 409;
+    throw error;
+  }
+
   if (String(payment.method).toUpperCase() !== 'MPESA') {
     const error = new Error('Payment method is not MPESA');
     error.status = 400;
@@ -610,12 +670,11 @@ export async function initiateStkPush(user, paymentId, phoneRaw) {
   const phone = phoneRaw.trim();
   // Accept 07XXXXXXXX, +2547XXXXXXXX, 2547XXXXXXXX
   let normalized;
-  if (/^0(7|1)\d{8}$/.test(phone)) {
-    // 07XXXXXXXX or 01? (keep only 07 for Kenya mobile)
+  if (/^0[17]\d{8}$/.test(phone)) {
     normalized = `254${phone.slice(1)}`;
-  } else if (/^\+2547\d{8}$/.test(phone)) {
+  } else if (/^\+254[17]\d{8}$/.test(phone)) {
     normalized = phone.replace(/^\+/, '');
-  } else if (/^2547\d{8}$/.test(phone)) {
+  } else if (/^254[17]\d{8}$/.test(phone)) {
     normalized = phone;
   } else {
     const error = new Error('Invalid Kenyan phone number');
@@ -651,5 +710,96 @@ export async function initiateStkPush(user, paymentId, phoneRaw) {
     checkoutRequestId: payment.checkoutRequestId,
     merchantRequestId: payment.merchantRequestId,
     responseDescription: darajaResp.responseDescription,
+  };
+}
+
+export async function queryStkPushStatus(user, paymentId) {
+  if (!user?.id) {
+    const error = new Error('Authentication required');
+    error.status = 401;
+    throw error;
+  }
+  if (user.role !== 'TENANT') {
+    const error = new Error('Only tenants may query their STK Push status');
+    error.status = 403;
+    throw error;
+  }
+  if (!mongoose.Types.ObjectId.isValid(String(paymentId))) {
+    const error = new Error('Payment ID is invalid');
+    error.status = 400;
+    throw error;
+  }
+
+  const payment = await Payment.findById(paymentId);
+  if (!payment) {
+    const error = new Error('Payment not found');
+    error.status = 404;
+    throw error;
+  }
+  if (normalizeId(payment.tenant) !== normalizeId(user.id)) {
+    const error = new Error('You may only query your own payment');
+    error.status = 403;
+    throw error;
+  }
+  if (String(payment.method).toUpperCase() !== 'MPESA') {
+    const error = new Error('Payment method is not MPESA');
+    error.status = 400;
+    throw error;
+  }
+  if (payment.status !== 'PENDING') {
+    return {
+      payment: sanitizePayment(payment),
+      resultCode: null,
+      resultDescription: '',
+    };
+  }
+  if (!payment.checkoutRequestId || !payment.merchantRequestId) {
+    const error = new Error('No Daraja STK request is associated with this payment');
+    error.status = 409;
+    throw error;
+  }
+
+  const result = await daraja.querySTKPush({ checkoutRequestId: payment.checkoutRequestId });
+  if (
+    result.checkoutRequestId !== payment.checkoutRequestId ||
+    result.merchantRequestId !== payment.merchantRequestId
+  ) {
+    console.warn('MPESA STK query: request identifier mismatch for payment', String(payment._id));
+    const error = new Error('Daraja returned a mismatched STK request');
+    error.status = 502;
+    throw error;
+  }
+
+  if (result.resultCode === 0) {
+    const bookingPaid = await ensureBookingPaid(payment);
+    if (!bookingPaid) {
+      return {
+        payment: sanitizePayment(payment),
+        resultCode: result.resultCode,
+        resultDescription: 'Booking reconciliation pending',
+      };
+    }
+    await Payment.updateOne(
+      { _id: payment._id, checkoutRequestId: payment.checkoutRequestId, merchantRequestId: payment.merchantRequestId, status: { $in: ['PENDING', 'FAILED'] } },
+      { $set: { status: 'SUCCESS' } }
+    );
+    payment.status = 'SUCCESS';
+  } else if (result.resultCode !== null && result.resultCode !== 0) {
+    const updateResult = await Payment.updateOne(
+      { _id: payment._id, checkoutRequestId: payment.checkoutRequestId, merchantRequestId: payment.merchantRequestId, status: 'PENDING' },
+      { $set: { status: 'FAILED' } }
+    );
+    if (updateResult.modifiedCount > 0) {
+      payment.status = 'FAILED';
+    } else {
+      const latestPayment = await Payment.findById(paymentId);
+      if (latestPayment) payment.status = latestPayment.status;
+    }
+  }
+
+  return {
+    payment: sanitizePayment(payment),
+    resultCode: result.resultCode,
+    resultDescription: result.resultDescription,
   };
 }

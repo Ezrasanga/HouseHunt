@@ -383,6 +383,12 @@ button:disabled:hover, .bp:disabled:hover, .bboost:disabled:hover, .mpesabtn:dis
 .arow-title{font-family:'Cormorant Garamond',serif;font-size:0.95rem;color:var(--sand);font-weight:600;}
 .arow-meta{font-size:0.7rem;color:rgba(245,230,200,0.35);margin-top:2px;}
 .arow-acts{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;}
+.property-pagination{display:flex;align-items:center;justify-content:center;gap:1rem;margin:1.5rem 0;flex-wrap:wrap;}
+.property-pagination span{font-size:0.82rem;color:var(--text-muted);}
+.booking-journey{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px;}
+.booking-journey span{font-size:0.65rem;color:#8a8a8a;background:rgba(10,10,24,0.05);border-radius:999px;padding:4px 9px;}
+.booking-journey span.complete{color:#276c44;background:rgba(39,108,68,0.1);font-weight:700;}
+.booking-conflict{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
 .actlog{background:rgba(255,255,255,0.02);border:1px solid rgba(196,153,26,0.1);border-radius:11px;overflow:hidden;}
 .actrow{display:flex;align-items:center;gap:9px;padding:9px 13px;border-bottom:1px solid rgba(196,153,26,0.07);}
 .actrow:last-child{border-bottom:none;}
@@ -430,6 +436,10 @@ button:disabled:hover, .bp:disabled:hover, .bboost:disabled:hover, .mpesabtn:dis
 .at.on{background:var(--rust);color:#fff;}
 .aerr{background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.22);color:#991B1B;padding:10px 14px;border-radius:8px;font-size:0.85rem;margin-bottom:1rem;}
 .field-error{color:#b91c1c;font-size:0.74rem;margin-top:4px;}
+.field-success{color:#166534;background:rgba(22,101,52,0.08);border:1px solid rgba(22,101,52,0.18);padding:10px 14px;border-radius:8px;font-size:0.85rem;margin-bottom:1rem;}
+.auth-forgot-row{display:flex;justify-content:flex-end;margin-top:0.35rem;}
+.auth-forgot-link{border:0;background:none;color:var(--rust);font:600 0.78rem 'Inter',sans-serif;cursor:pointer;padding:0.3rem 0;}
+.auth-forgot-link:hover{text-decoration:underline;color:var(--ember);}
 .auth-submit{width:100%;padding:14px 0;}
 .password-field{position:relative;display:flex;align-items:center;}
 .password-field input{padding-right:48px;}

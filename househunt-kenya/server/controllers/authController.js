@@ -1,5 +1,17 @@
-import { getProfile, loginUser, registerUser } from '../services/authService.js';
-import { validateLoginInput, validateRegisterInput } from '../utils/authValidator.js';
+import {
+  getProfile,
+  loginUser,
+  registerUser,
+  requestPasswordReset,
+  resetPassword,
+} from '../services/authService.js';
+import { recordAuditEvent } from '../services/auditLogService.js';
+import {
+  validateLoginInput,
+  validatePasswordResetInput,
+  validatePasswordResetRequestInput,
+  validateRegisterInput,
+} from '../utils/authValidator.js';
 
 function sendResponse(res, statusCode, success, message, data = null, errors = []) {
   return res.status(statusCode).json({
@@ -18,6 +30,13 @@ export async function login(req, res, next) {
     }
 
     const result = await loginUser(validation.data);
+    await recordAuditEvent({
+      actor: result.user,
+      action: 'User login',
+      description: 'Signed in successfully',
+      resourceType: 'user',
+      resourceId: result.user.id || result.user._id,
+    });
     return sendResponse(res, 200, true, 'Login successful', result, []);
   } catch (error) {
     next(error);
@@ -32,6 +51,13 @@ export async function register(req, res, next) {
     }
 
     const result = await registerUser(validation.data);
+    await recordAuditEvent({
+      actor: result.user,
+      action: 'Account registered',
+      description: 'Created an account',
+      resourceType: 'user',
+      resourceId: result.user.id || result.user._id,
+    });
     return sendResponse(res, 201, true, 'Registration successful', result, []);
   } catch (error) {
     next(error);
@@ -47,6 +73,41 @@ export async function profile(req, res, next) {
 
     const user = await getProfile(userId);
     return sendResponse(res, 200, true, 'Profile fetched successfully', { user }, []);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function requestPasswordResetLink(req, res, next) {
+  try {
+    const validation = validatePasswordResetRequestInput(req.body);
+    if (!validation.success) {
+      return sendResponse(res, 400, false, 'Validation failed', null, validation.errors);
+    }
+
+    await requestPasswordReset(validation.data.email);
+    return sendResponse(
+      res,
+      200,
+      true,
+      'If an account exists for that email, password reset instructions will be sent.',
+      null,
+      []
+    );
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function completePasswordReset(req, res, next) {
+  try {
+    const validation = validatePasswordResetInput(req.body);
+    if (!validation.success) {
+      return sendResponse(res, 400, false, 'Validation failed', null, validation.errors);
+    }
+
+    await resetPassword(validation.data);
+    return sendResponse(res, 200, true, 'Password reset successfully. You can now sign in.', null, []);
   } catch (error) {
     next(error);
   }

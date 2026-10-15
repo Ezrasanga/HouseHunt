@@ -1,4 +1,5 @@
 import * as paymentService from '../services/paymentService.js';
+import { recordAuditEvent } from '../services/auditLogService.js';
 
 function sendResponse(res, statusCode, success, message, data = null, errors = []) {
   return res.status(statusCode).json({ success, message, data, errors });
@@ -16,6 +17,13 @@ function handleError(res, err) {
 export async function createPayment(req, res) {
   try {
     const result = await paymentService.createPayment(req.user, req.body);
+    await recordAuditEvent({
+      actor: req.user,
+      action: 'Payment created',
+      description: 'Created a pending booking payment',
+      resourceType: 'payment',
+      resourceId: result.id,
+    });
     return sendResponse(res, 201, true, 'Payment request created successfully', result, []);
   } catch (err) {
     return handleError(res, err);
@@ -52,7 +60,30 @@ export async function listPaymentsByBooking(req, res) {
 export async function initiateStkPush(req, res) {
   try {
     const result = await paymentService.initiateStkPush(req.user, req.params.paymentId, req.body.phone);
+    await recordAuditEvent({
+      actor: req.user,
+      action: 'M-PESA STK requested',
+      description: 'Initiated an M-PESA STK Push',
+      resourceType: 'payment',
+      resourceId: req.params.paymentId,
+    });
     return sendResponse(res, 200, true, 'STK Push initiated successfully', result, []);
+  } catch (err) {
+    return handleError(res, err);
+  }
+}
+
+export async function queryStkPushStatus(req, res) {
+  try {
+    const result = await paymentService.queryStkPushStatus(req.user, req.params.paymentId);
+    await recordAuditEvent({
+      actor: req.user,
+      action: 'M-PESA STK status queried',
+      description: `Daraja STK query completed with result code ${result.resultCode ?? 'pending'}`,
+      resourceType: 'payment',
+      resourceId: req.params.paymentId,
+    });
+    return sendResponse(res, 200, true, 'M-PESA payment status checked successfully', result, []);
   } catch (err) {
     return handleError(res, err);
   }
@@ -62,11 +93,16 @@ export async function mpesaCallback(req, res) {
   try {
     const payload = req.body;
     const result = await paymentService.handleMpesaCallback(payload);
+    await recordAuditEvent({
+      action: 'M-PESA callback received',
+      description: `Daraja callback processed: ${String(result?.message || 'processed').slice(0, 120)}`,
+      resourceType: 'payment',
+      outcome: result?.success === false ? 'FAILURE' : 'SUCCESS',
+    });
     // Acknowledge quickly — Daraja expects a 200
     return res.status(200).json({ success: true, message: 'Callback processed', data: result });
   } catch (err) {
-    // Always respond 200 to avoid retries when we intentionally ignore
     console.error('mpesaCallback error', err && err.message);
-    return res.status(200).json({ success: true });
+    return res.status(500).json({ success: false, message: 'Callback processing failed' });
   }
 }

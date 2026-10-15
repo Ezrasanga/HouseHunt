@@ -7,6 +7,9 @@ import * as daraja from '../services/darajaService.js';
 const origKey = process.env.MPESA_CONSUMER_KEY;
 const origSecret = process.env.MPESA_CONSUMER_SECRET;
 const origEnv = process.env.MPESA_ENV;
+const origShortcode = process.env.MPESA_SHORTCODE;
+const origPasskey = process.env.MPESA_PASSKEY;
+const origCallbackUrl = process.env.MPESA_CALLBACK_URL;
 
 test('getAccessToken fails when credentials missing', async () => {
   process.env.MPESA_CONSUMER_KEY = '';
@@ -94,9 +97,41 @@ test('getAccessToken handles HTTP errors safely', async () => {
   restoreHttpGet();
 });
 
+test('initiateSTKPush rejects successful responses missing request identifiers', async () => {
+  process.env.MPESA_CONSUMER_KEY = 'key';
+  process.env.MPESA_CONSUMER_SECRET = 'secret';
+  process.env.MPESA_SHORTCODE = '123456';
+  process.env.MPESA_PASSKEY = 'passkey';
+  process.env.MPESA_CALLBACK_URL = 'https://example.com/callback';
+  daraja._resetCacheForTests();
+  daraja.__setHttpGet(async () => ({
+    statusCode: 200,
+    body: JSON.stringify({ access_token: 'test-token', expires_in: 3600 }),
+  }));
+  daraja.__setHttpPost(async () => ({
+    statusCode: 200,
+    body: JSON.stringify({ ResponseDescription: 'Accepted' }),
+  }));
+
+  await assert.rejects(async () => {
+    await daraja.initiateSTKPush({
+      amount: 1000,
+      phone: '254712345678',
+      accountReference: 'HH-test',
+    });
+  }, (err) => {
+    assert.equal(err.status, 502);
+    assert.match(err.message, /missing request identifiers/);
+    return true;
+  });
+});
+
 test.after(() => {
   process.env.MPESA_CONSUMER_KEY = origKey;
   process.env.MPESA_CONSUMER_SECRET = origSecret;
   process.env.MPESA_ENV = origEnv;
+  process.env.MPESA_SHORTCODE = origShortcode;
+  process.env.MPESA_PASSKEY = origPasskey;
+  process.env.MPESA_CALLBACK_URL = origCallbackUrl;
   restoreHttpGet();
 });

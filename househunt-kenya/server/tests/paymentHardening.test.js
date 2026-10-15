@@ -5,13 +5,18 @@ import * as paymentService from '../services/paymentService.js';
 import Payment from '../models/Payment.js';
 import Booking from '../models/Booking.js';
 import * as paymentsProvider from '../services/payments/provider.js';
+import * as daraja from '../services/darajaService.js';
+import { mockBookingSettlement, mockDarajaVerification, mockPaymentSettlement } from './helpers/paymentSettlement.js';
 
 const originalPaymentFindOne = Payment.findOne;
+const originalPaymentUpdateOne = Payment.updateOne;
 const originalPaymentFindById = Payment.findById;
 const originalPaymentCreate = Payment.create;
 const originalPaymentFind = Payment.find;
 const originalPaymentCountDocuments = Payment.countDocuments;
 const originalBookingFindById = Booking.findById;
+const originalBookingUpdateOne = Booking.updateOne;
+const originalBookingExists = Booking.exists;
 const originalProviderInitiate = paymentsProvider.initiatePaymentRequest;
 
 function makeCallback({ merchantRequestId = 'mr-1', checkoutRequestId = 'cr-1', resultCode = 0, items = [] } = {}) {
@@ -30,9 +35,11 @@ function makeCallback({ merchantRequestId = 'mr-1', checkoutRequestId = 'cr-1', 
 
 test('Successful payment becomes SUCCESS and booking PAID', async () => {
   const payment = { _id: 'p1', tenant: 't1', booking: 'b1', merchantRequestId: 'mr-1', checkoutRequestId: 'cr-1', status: 'PENDING', amount: 1000, currency: 'KES', phone: '254712345678', save: async function() {} };
-  let bookingSaved = null;
   Payment.findOne = async () => payment;
-  Booking.findById = async () => ({ _id: 'b1', paymentStatus: 'UNPAID', save: async function() { bookingSaved = this; } });
+  mockPaymentSettlement(Payment, payment);
+  const booking = { _id: 'b1', status: 'APPROVED', amountPaid: 0, totalDue: 1000, paymentStatus: 'UNPAID' };
+  mockBookingSettlement(Booking, booking);
+  mockDarajaVerification(daraja, { merchantRequestId: 'mr-1', checkoutRequestId: 'cr-1', resultCode: 0 });
 
   const items = [
     { Name: 'Amount', Value: 1000 },
@@ -45,7 +52,7 @@ test('Successful payment becomes SUCCESS and booking PAID', async () => {
   assert.equal(res.success, true);
   assert.equal(payment.status, 'SUCCESS');
   assert.equal(payment.mpesaReceipt, 'MPESA123');
-  assert.equal(bookingSaved.paymentStatus, 'PAID');
+  assert.equal(booking.paymentStatus, 'PAID');
 });
 
 test('Successful callback without provider metadata does not mark payment paid', async () => {
@@ -67,7 +74,9 @@ test('Successful callback rolls payment back when booking reconciliation fails',
   const statuses = [];
   const payment = { _id: 'p-booking-failure', booking: 'b-booking-failure', merchantRequestId: 'mr-booking-failure', checkoutRequestId: 'cr-booking-failure', status: 'PENDING', amount: 1000, phone: '254712345678', save: async function() { statuses.push(this.status); } };
   Payment.findOne = async () => payment;
-  Booking.findById = async () => null;
+  Booking.updateOne = async () => ({ modifiedCount: 0 });
+  Booking.exists = async () => null;
+  mockDarajaVerification(daraja, { merchantRequestId: 'mr-booking-failure', checkoutRequestId: 'cr-booking-failure', resultCode: 0 });
 
   const res = await paymentService.handleMpesaCallback(makeCallback({
     merchantRequestId: 'mr-booking-failure',
@@ -80,15 +89,91 @@ test('Successful callback rolls payment back when booking reconciliation fails',
   }));
 
   assert.equal(res.message, 'Booking reconciliation pending');
-  assert.deepEqual(statuses, ['SUCCESS', 'PENDING']);
+  assert.deepEqual(statuses, []);
   assert.equal(payment.status, 'PENDING');
+});
+
+test('Successful callback propagates booking persistence errors for provider retry', async () => {
+  const payment = {
+    _id: 'p-booking-db-error',
+    booking: 'b-booking-db-error',
+    merchantRequestId: 'mr-booking-db-error',
+    checkoutRequestId: 'cr-booking-db-error',
+    status: 'PENDING',
+    amount: 1000,
+    phone: '254712345678',
+  };
+  Payment.findOne = async () => payment;
+  Booking.updateOne = async () => {
+    throw new Error('Database unavailable');
+  };
+  mockDarajaVerification(daraja, {
+    merchantRequestId: payment.merchantRequestId,
+    checkoutRequestId: payment.checkoutRequestId,
+    resultCode: 0,
+  });
+
+  await assert.rejects(
+    paymentService.handleMpesaCallback(makeCallback({
+      merchantRequestId: payment.merchantRequestId,
+      checkoutRequestId: payment.checkoutRequestId,
+      items: [
+        { Name: 'Amount', Value: 1000 },
+        { Name: 'MpesaReceiptNumber', Value: 'MPESA-DB-ERROR' },
+        { Name: 'PhoneNumber', Value: '254712345678' },
+      ],
+    })),
+    /Database unavailable/
+  );
+  assert.equal(payment.status, 'PENDING');
+});
+
+test('Successful callback cannot pay a booking that was cancelled', async () => {
+  const statuses = [];
+  const payment = {
+    _id: 'p-cancelled-booking',
+    booking: 'b-cancelled-booking',
+    merchantRequestId: 'mr-cancelled-booking',
+    checkoutRequestId: 'cr-cancelled-booking',
+    status: 'PENDING',
+    amount: 1000,
+    phone: '254712345678',
+    save: async function() { statuses.push(this.status); },
+  };
+  const booking = {
+    _id: 'b-cancelled-booking',
+    status: 'CANCELLED',
+    paymentStatus: 'UNPAID',
+    amountPaid: 0,
+    save: async function() { throw new Error('Cancelled booking must not be reconciled as paid.'); },
+  };
+  Payment.findOne = async () => payment;
+  mockBookingSettlement(Booking, booking);
+  mockDarajaVerification(daraja, { merchantRequestId: 'mr-cancelled-booking', checkoutRequestId: 'cr-cancelled-booking', resultCode: 0 });
+
+  const result = await paymentService.handleMpesaCallback(makeCallback({
+    merchantRequestId: 'mr-cancelled-booking',
+    checkoutRequestId: 'cr-cancelled-booking',
+    items: [
+      { Name: 'Amount', Value: 1000 },
+      { Name: 'MpesaReceiptNumber', Value: 'MPESA-CANCELLED' },
+      { Name: 'PhoneNumber', Value: '254712345678' },
+    ],
+  }));
+
+  assert.equal(result.message, 'Booking reconciliation pending');
+  assert.deepEqual(statuses, []);
+  assert.equal(booking.status, 'CANCELLED');
+  assert.equal(booking.paymentStatus, 'UNPAID');
 });
 
 test('Successful payment updates partial booking balance', async () => {
   const payment = { _id: 'p-partial', booking: 'b-partial', merchantRequestId: 'mr-partial', checkoutRequestId: 'cr-partial', status: 'PENDING', amount: 1000, phone: '254712345678', save: async function() {} };
-  const booking = { _id: 'b-partial', totalDue: 2000, amountPaid: 0, paymentStatus: 'UNPAID', save: async function() {} };
+  const booking = { _id: 'b-partial', status: 'APPROVED', totalDue: 2000, amountPaid: 0, paymentStatus: 'UNPAID', save: async function() {} };
   Payment.findOne = async () => payment;
-  Booking.findById = async () => booking;
+  mockBookingSettlement(Booking, booking);
+  mockPaymentSettlement(Payment, payment);
+  mockDarajaVerification(daraja, { merchantRequestId: 'mr-partial', checkoutRequestId: 'cr-partial', resultCode: 0 });
 
   await paymentService.handleMpesaCallback(makeCallback({
     merchantRequestId: 'mr-partial',
@@ -105,17 +190,16 @@ test('Successful payment updates partial booking balance', async () => {
 });
 
 test('Failed Daraja callback becomes FAILED and booking is not paid', async () => {
-  let bookingSaved = null;
-  const payment = { _id: 'p2', tenant: 't1', booking: 'b2', merchantRequestId: 'mr-2', checkoutRequestId: 'cr-2', status: 'PENDING', amount: 500, currency: 'KES', phone: '254712345678', save: async function() {} };
+  const payment = { _id: 'p2', tenant: 't1', booking: 'b2', merchantRequestId: 'mr-2', checkoutRequestId: 'cr-2', status: 'PENDING', amount: 500, currency: 'KES', phone: '254712345678', mpesaReceipt: '', save: async function() {} };
   Payment.findOne = async () => payment;
-  Booking.findById = async () => ({ _id: 'b2', paymentStatus: 'UNPAID', save: async function() { bookingSaved = this; } });
+  mockPaymentSettlement(Payment, payment);
+  mockDarajaVerification(daraja, { merchantRequestId: 'mr-2', checkoutRequestId: 'cr-2', resultCode: 1 });
 
   const res = await paymentService.handleMpesaCallback(makeCallback({ merchantRequestId: 'mr-2', checkoutRequestId: 'cr-2', resultCode: 1 }));
 
   assert.equal(res.success, true);
   assert.equal(payment.status, 'FAILED');
   assert.equal(payment.mpesaReceipt, '');
-  assert.equal(bookingSaved, null);
 });
 
 test('Duplicate successful callback is idempotent', async () => {
@@ -260,10 +344,14 @@ test('Unauthenticated payment access is rejected', async () => {
 
 test.after(() => {
   Payment.findOne = originalPaymentFindOne;
+  Payment.updateOne = originalPaymentUpdateOne;
   Payment.findById = originalPaymentFindById;
   Payment.create = originalPaymentCreate;
   Payment.find = originalPaymentFind;
   Payment.countDocuments = originalPaymentCountDocuments;
   Booking.findById = originalBookingFindById;
+  Booking.updateOne = originalBookingUpdateOne;
+  Booking.exists = originalBookingExists;
+  daraja.__resetStkQuery();
   paymentsProvider.setInitiatePaymentRequest(originalProviderInitiate);
 });

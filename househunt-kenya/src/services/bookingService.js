@@ -48,6 +48,12 @@ export async function cancelBooking(id) {
   return normalizeBooking(booking);
 }
 
+export async function updateBookingCompletion(id, action) {
+  const response = await api.patch(`/api/bookings/${id}/completion`, { action });
+  const booking = response.data?.data?.booking || response.data?.booking;
+  return normalizeBooking(booking);
+}
+
 export async function getLandlordBookings(params = {}) {
   const response = await api.get("/api/bookings/landlord", { params });
   return {
@@ -70,6 +76,26 @@ export async function rejectBooking(id) {
 
 export async function getBookingById(id) {
   const response = await api.get(`/api/bookings/${id}`);
+  const booking = response.data?.data?.booking || response.data?.booking;
+  return normalizeBooking(booking);
+}
+
+export async function getAdminBookings(params = {}) {
+  const response = await api.get("/api/bookings/admin", { params });
+  return {
+    bookings: (response.data?.data?.bookings || []).map(normalizeBooking),
+    pagination: response.data?.data?.pagination || null,
+  };
+}
+
+export async function markBookingAsTestData(id) {
+  const response = await api.patch(`/api/bookings/${id}/test-data`);
+  const booking = response.data?.data?.booking || response.data?.booking;
+  return normalizeBooking(booking);
+}
+
+export async function closeTestBooking(id) {
+  const response = await api.patch(`/api/bookings/${id}/close-test`);
   const booking = response.data?.data?.booking || response.data?.booking;
   return normalizeBooking(booking);
 }

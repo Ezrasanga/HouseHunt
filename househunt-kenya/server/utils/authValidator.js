@@ -81,6 +81,49 @@ export function validatePasswordChangeInput(payload) {
   };
 }
 
+export function validatePasswordResetRequestInput(payload) {
+  const errors = [];
+  const data = payload || {};
+
+  if (!data.email || !isValidEmail(data.email)) {
+    errors.push({ field: 'email', message: 'Enter a valid email address' });
+  }
+
+  if (errors.length > 0) {
+    return { success: false, errors };
+  }
+
+  return {
+    success: true,
+    data: { email: String(data.email).trim().toLowerCase() },
+  };
+}
+
+export function validatePasswordResetInput(payload) {
+  const errors = [];
+  const data = payload || {};
+
+  if (typeof data.token !== 'string' || !data.token.trim()) {
+    errors.push({ field: 'token', message: 'Password reset token is required' });
+  }
+
+  if (typeof data.newPassword !== 'string' || data.newPassword.length < 8) {
+    errors.push({ field: 'newPassword', message: 'Password must be at least 8 characters' });
+  }
+
+  if (errors.length > 0) {
+    return { success: false, errors };
+  }
+
+  return {
+    success: true,
+    data: {
+      token: data.token,
+      newPassword: data.newPassword,
+    },
+  };
+}
+
 export function validateRegisterInput(payload) {
   const errors = [];
   const data = payload || {};
@@ -133,8 +176,8 @@ export function validateLoginInput(payload) {
     errors.push({ field: 'password', message: 'Password must be at least 8 characters' });
   }
 
-  if (!isValidRole(data.role)) {
-    errors.push({ field: 'role', message: 'Role must be TENANT or LANDLORD' });
+  if (data.role !== undefined && data.role !== null && !['TENANT', 'LANDLORD', 'ADMIN'].includes(String(data.role).toUpperCase())) {
+    errors.push({ field: 'role', message: 'Role must be TENANT, LANDLORD, or ADMIN' });
   }
 
   if (errors.length > 0) {

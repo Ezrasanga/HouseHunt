@@ -7,6 +7,7 @@ import {
   getLandlordBookings,
   getTenantBookings,
   rejectBooking as rejectBookingRequest,
+  updateBookingCompletion as updateBookingCompletionRequest,
 } from "../services/bookingService";
 
 function bookingErrorMessage(error) {
@@ -18,6 +19,7 @@ export default function useBookings() {
 
   const [tenantBookings, setTenantBookings] = useState([]);
   const [landlordBookings, setLandlordBookings] = useState([]);
+  const [landlordBookingsPagination, setLandlordBookingsPagination] = useState(null);
   const [tenantLoading, setTenantLoading] = useState(false);
   const [landlordLoading, setLandlordLoading] = useState(false);
   const [tenantError, setTenantError] = useState("");
@@ -57,6 +59,7 @@ export default function useBookings() {
     try {
       const result = await getLandlordBookings({ limit: 10, ...params });
       setLandlordBookings(result.bookings || []);
+      setLandlordBookingsPagination(result.pagination || null);
       return result.bookings || [];
     } catch (error) {
       const message = bookingErrorMessage(error);
@@ -111,9 +114,19 @@ export default function useBookings() {
     return booking;
   }, [loadLandlordBookings]);
 
+  const updateBookingCompletion = useCallback(async (id, action) => {
+    const booking = await updateBookingCompletionRequest(id, action);
+    setTenantBookings(current => current.map(item => item.id === id ? booking : item));
+    setLandlordBookings(current => current.map(item => item.id === id ? booking : item));
+    if (user?.role === "tenant") await loadTenantBookings({ limit: 10 });
+    if (user?.role === "landlord") await loadLandlordBookings({ limit: 10 });
+    return booking;
+  }, [loadLandlordBookings, loadTenantBookings, user]);
+
   return {
     tenantBookings,
     landlordBookings,
+    landlordBookingsPagination,
     tenantLoading,
     landlordLoading,
     tenantError,
@@ -124,5 +137,6 @@ export default function useBookings() {
     cancelBooking,
     approveBooking,
     rejectBooking,
+    updateBookingCompletion,
   };
 }

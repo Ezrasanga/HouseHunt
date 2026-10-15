@@ -33,6 +33,15 @@ export async function authenticate(req, res, next) {
       });
     }
 
+    if (Number(decoded.tokenVersion || 0) !== Number(user.tokenVersion || 0)) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired token',
+        data: null,
+        errors: [{ field: 'token', message: 'The supplied token is no longer valid' }],
+      });
+    }
+
     if (!user.isActive) {
       return res.status(403).json({
         success: false,

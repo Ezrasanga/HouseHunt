@@ -6,6 +6,7 @@ const router = express.Router();
 router.post('/', requireAuth, paymentController.createPayment);
 router.get('/booking/:bookingId', requireAuth, paymentController.listPaymentsByBooking);
 router.post('/:paymentId/stk-push', requireAuth, paymentController.initiateStkPush);
+router.post('/:paymentId/stk-query', requireAuth, paymentController.queryStkPushStatus);
 router.get('/:id', requireAuth, paymentController.getPayment);
 router.get('/', requireAuth, paymentController.listPayments);
 

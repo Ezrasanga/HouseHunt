@@ -1,4 +1,5 @@
 import * as userService from '../services/userService.js';
+import { recordAuditEvent } from '../services/auditLogService.js';
 
 function sendResponse(res, statusCode, success, message, data = null, errors = []) {
   return res.status(statusCode).json({
@@ -65,6 +66,13 @@ export async function changePassword(req, res) {
 export async function updateStatus(req, res) {
   try {
     const result = await userService.updateUserStatus(req.params.id, req.body, req.user?.id);
+    await recordAuditEvent({
+      actor: req.user,
+      action: req.body?.isActive ? 'User activated' : 'User deactivated',
+      description: req.body?.isActive ? 'Admin restored account access' : 'Admin suspended account access',
+      resourceType: 'user',
+      resourceId: req.params.id,
+    });
     return sendResponse(res, 200, true, 'User status updated successfully', { user: result }, []);
   } catch (err) {
     return handleError(res, err);
@@ -74,6 +82,13 @@ export async function updateStatus(req, res) {
 export async function remove(req, res) {
   try {
     const result = await userService.deleteUser(req.params.id, req.user?.id);
+    await recordAuditEvent({
+      actor: req.user,
+      action: 'User deleted',
+      description: 'Admin deleted a user account',
+      resourceType: 'user',
+      resourceId: req.params.id,
+    });
     return sendResponse(res, 200, true, 'User deleted successfully', { user: result }, []);
   } catch (err) {
     return handleError(res, err);

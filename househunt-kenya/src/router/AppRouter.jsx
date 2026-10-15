@@ -14,6 +14,7 @@ export default function AppRouter() {
         <Route path="/" element={<AppShell initialTab="home" />} />
         <Route path="/login" element={<AppShell initialTab="home" authMode="login" />} />
         <Route path="/register" element={<AppShell initialTab="home" authMode="register" />} />
+        <Route path="/reset-password" element={<AppShell key="password-reset" initialTab="home" authMode="reset" />} />
         <Route path="/property/:id" element={<PropertyRoute />} />
         <Route
           path="/admin"

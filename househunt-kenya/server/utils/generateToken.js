@@ -14,6 +14,7 @@ export function generateToken(user) {
       id: user._id?.toString?.() || user.id,
       role: user.role,
       email: user.email,
+      tokenVersion: user.tokenVersion || 0,
     },
     secret,
     { expiresIn }

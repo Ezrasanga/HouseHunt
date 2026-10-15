@@ -5,7 +5,7 @@ export default function PropertyGallery({ media, midx, setMidx }) {
     <div className="thumbrow">
       {media.map((m, i) => (
         <div key={i} className={`thumb${midx === i ? " on" : ""}`} onClick={() => setMidx(i)}>
-          {m.type === "image" ? <img src={m.url} alt="" /> : <video src={m.url} muted />}
+          {m.type === "image" ? <img src={m.url} alt="" loading="lazy" decoding="async" /> : <video src={m.url} muted preload="none" />}
         </div>
       ))}
     </div>

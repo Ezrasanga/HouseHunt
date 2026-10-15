@@ -1,5 +1,60 @@
+import { createHash, randomBytes } from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
 import { generateToken } from '../utils/generateToken.js';
+import { assertPasswordResetEmailConfigured, sendPasswordResetEmail } from './emailService.js';
+
+const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
+
+export async function requestPasswordReset(
+  email,
+  { sendEmail = sendPasswordResetEmail, frontendUrl = globalThis.process?.env?.FRONTEND_URL } = {}
+) {
+  if (sendEmail === sendPasswordResetEmail) assertPasswordResetEmailConfigured();
+  const user = await User.findOne({ email });
+  if (!user) return;
+
+  const token = randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+  user.passwordResetTokenHash = createHash('sha256').update(token).digest('hex');
+  user.passwordResetExpiresAt = expiresAt;
+  await user.save();
+
+  try {
+    await sendEmail({ user, token, frontendUrl });
+  } catch (error) {
+    user.passwordResetTokenHash = undefined;
+    user.passwordResetExpiresAt = undefined;
+    await user.save();
+    throw error;
+  }
+}
+
+export async function resetPassword({ token, newPassword }) {
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  const user = await User.findOneAndUpdate(
+    {
+      passwordResetTokenHash: tokenHash,
+      passwordResetExpiresAt: { $gt: new Date() },
+    },
+    {
+      $set: { password: passwordHash },
+      $inc: { tokenVersion: 1 },
+      $unset: {
+        passwordResetTokenHash: 1,
+        passwordResetExpiresAt: 1,
+      },
+    },
+    { new: true, runValidators: true }
+  );
+
+  if (!user) {
+    const error = new Error('This password reset link is invalid or has expired. Request a new one.');
+    error.status = 400;
+    throw error;
+  }
+}
 
 function normalizeRole(role) {
   const normalizedRole = (role || 'TENANT').toUpperCase();
@@ -61,7 +116,7 @@ export async function loginUser(payload) {
     throw error;
   }
 
-  const normalizedRole = role ? normalizeRole(role) : null;
+  const normalizedRole = role ? String(role).toUpperCase() : null;
   const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
 
   if (!user) {

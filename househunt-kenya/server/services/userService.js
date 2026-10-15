@@ -162,6 +162,9 @@ export async function changePassword(userId, payload) {
   }
 
   user.password = validation.data.newPassword;
+  user.passwordResetTokenHash = undefined;
+  user.passwordResetExpiresAt = undefined;
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
   await user.save();
 
   return sanitizeUser(user);

@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 
-export default function Navbar({ tab, setTab, user, logout, setAuthModal }) {
+export default function Navbar({ tab, setTab, user, logout, setAuthModal, onChangePassword }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const navRef = useRef(null);
   const navigateTo = target => {
-    if ((target === "landlord" || target === "tenant") && !user) setAuthModal(target);
-    else setTab(target);
+    if (target === "landlord" || target === "tenant") {
+      if (!user) {
+        setAuthModal(target);
+      } else {
+        setTab(user.role === "admin" ? "admin" : user.role);
+      }
+    } else {
+      setTab(target);
+    }
     setMobileOpen(false);
   };
 
@@ -48,6 +55,7 @@ export default function Navbar({ tab, setTab, user, logout, setAuthModal }) {
           <div className="userpill">
             <div className={`uav${user.role === "admin" ? " adm" : ""}`}>{user.role === "admin" ? "A" : user.data.name[0]}</div>
             <span>{user.role === "admin" ? "Administrator" : user.data.name.split(" ")[0]}</span>
+            <button className="sout" onClick={onChangePassword}>Change password</button>
             <button className="sout" onClick={logout}>Sign out</button>
           </div>
         ) : (

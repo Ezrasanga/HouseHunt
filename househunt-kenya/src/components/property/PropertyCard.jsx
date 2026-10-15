@@ -12,7 +12,7 @@ export default function PropertyCard({ p, onView, user, onDel, isFavorite = fals
         <div className="pthumb-bg" style={{ background: `linear-gradient(135deg,${p.color}cc,${p.color}77)` }} />
         {cover ? (
           <>
-            <img src={cover.url} alt={p.title} />
+            <img src={cover.url} alt={p.title} loading="lazy" decoding="async" />
             <div className="pthumb-ov" />
           </>
         ) : (

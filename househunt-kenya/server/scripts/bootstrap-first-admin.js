@@ -1,8 +1,9 @@
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
+import { Buffer } from 'node:buffer';
 import { createInterface } from 'node:readline/promises';
 import { emitKeypressEvents } from 'node:readline';
-import { stdin, stdout } from 'node:process';
+import process, { stdin, stdout } from 'node:process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import User from '../models/User.js';
@@ -109,7 +110,10 @@ async function main() {
       lockAcquired = true;
     } catch (error) {
       if (error?.code === 11000) {
-        throw new Error('The first-admin bootstrap is already running or was interrupted; investigate before retrying.');
+        throw new Error(
+          'The first-admin bootstrap is already running or was interrupted; investigate before retrying.',
+          { cause: error },
+        );
       }
       throw error;
     }

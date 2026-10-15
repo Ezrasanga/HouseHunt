@@ -5,13 +5,26 @@ import useAuth from "../hooks/useAuth";
 import useBookings from "../hooks/useBookings";
 import useProperties from "../hooks/useProperties";
 import { getAnnouncements } from "../services/announcementService";
+import {
+  changePassword,
+  completePasswordReset,
+  requestPasswordReset,
+} from "../services/authService";
+import {
+  closeTestBooking,
+  getAdminBookings,
+  markBookingAsTestData,
+} from "../services/bookingService";
+import { createPayment, getPayment, getPaymentsByBooking, initiateStkPush, queryStkPushStatus } from "../services/paymentService";
 import { deleteUser, getUsers, updateUserStatus } from "../services/userService";
 import Navbar from "../components/layout/Navbar";
 import Hero from "../components/layout/Hero";
 import SearchBar from "../components/layout/SearchBar";
 import PropertyGrid from "../components/property/PropertyGrid";
+import PropertyPagination from "../components/property/PropertyPagination";
 import PropertyGallery from "../components/property/PropertyGallery";
 import PropertyDetails from "../components/property/PropertyDetails";
+import AdminActivityLog from "../components/admin/AdminActivityLog";
 import PropertyActions from "../components/property/PropertyActions";
 import "../styles/app.css";
 
@@ -28,7 +41,6 @@ const profileFields = user => ({
 
 // ── DATA ──────────────────────────────────────────────────────────────────────
 const KES = n=>`KSh ${Number(n).toLocaleString()}`;
-const nowStr = ()=>new Date().toLocaleString("en-KE",{hour12:false}).replace(","," ");
 const todayStr = ()=>new Date().toISOString().split("T")[0];
 const bookingLocation = location => {
   if (typeof location === "string") return location;
@@ -38,6 +50,17 @@ const bookingLocation = location => {
     .join(", ");
 };
 const propertyTypeForApi = type => type === "House" || type === "Penthouse" ? "Apartment" : type === "Room" ? "Single Room" : type;
+const propertySearchQuery = (search, budget, type, page) => {
+  const query = { page, search: search.trim() };
+  if (type) query.propertyType = type;
+  if (budget === "low") query.maxPrice = 14999;
+  if (budget === "mid") {
+    query.minPrice = 15000;
+    query.maxPrice = 35000;
+  }
+  if (budget === "high") query.minPrice = 35001;
+  return query;
+};
 const propertyPayload = (form, media) => {
   const locationParts = form.location.split(",").map(part => part.trim()).filter(Boolean);
   const rooms = String(form.rooms || "");
@@ -78,21 +101,21 @@ const SEED_ANNOUNCEMENTS = [
   {id:"A2",title:"Mombasa listings are now live 🎉",body:"50+ verified listings on Mombasa Island and Nyali just added.",type:"info",date:"2024-02-10",active:true},
 ];
 
-const SEED_LOG = [
-  {id:1,time:"2024-02-16 14:22",action:"Contact unlocked",detail:"Amina · Luxury Penthouse · KSh 100",kind:"payment"},
-  {id:2,time:"2024-02-16 08:30",action:"Listing boosted",detail:"Executive 1BR · Grace · KSh 200",kind:"payment"},
-  {id:3,time:"2024-02-15 11:15",action:"Tenant registered",detail:"Amina Odhiambo",kind:"success"},
-  {id:4,time:"2024-02-15 09:42",action:"Listing posted",detail:"Spacious 2BR · Grace Wanjiku",kind:"info"},
-];
-
-
-
 // ── PROP CARD COMPONENT ───────────────────────────────────────────────────────
 
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 export default function AppShell({ initialTab = "home", authMode = null, propertyId = null }) {
   const { user, login, register, updateUser, updateProfile, logout: logoutUser, isLoading: authLoading } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [search, setSearch] = useState("");
+  const [budget, setBudget] = useState("");
+  const [ptype, setPtype] = useState("");
+  const [propertyPage, setPropertyPage] = useState(1);
+  const publicPropertyQuery = user?.role === "admin" || user?.role === "landlord"
+    ? {}
+    : propertySearchQuery(search, budget, ptype, propertyPage);
   const {
     properties: props,
     pagination: propertyPagination,
@@ -106,47 +129,65 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     approveProperty: approvePropertyApi,
     updatePropertyStatus: updatePropertyStatusApi,
     featureProperty: featurePropertyApi,
-  } = useProperties({ limit: user?.role === "admin" ? 100 : user?.role === "landlord" ? 50 : 12 });
+  } = useProperties({
+    limit: user?.role === "admin" ? 100 : user?.role === "landlord" ? 50 : 12,
+    query: publicPropertyQuery,
+  });
   const {
     tenantBookings,
     landlordBookings,
+    landlordBookingsPagination,
     tenantLoading,
     landlordLoading,
     tenantError,
     landlordError,
+    loadTenantBookings,
+    loadLandlordBookings,
     createBooking,
     cancelBooking,
     approveBooking,
     rejectBooking,
+    updateBookingCompletion,
   } = useBookings();
   const [tab, setTab] = useState(initialTab);
   const [landlords, setLandlords] = useState([]);
   const [tenants, setTenants] = useState([]);
   const [adminUsers, setAdminUsers] = useState([]);
+  const [adminBookings, setAdminBookings] = useState([]);
+  const [adminBookingsPagination, setAdminBookingsPagination] = useState(null);
+  const [adminBookingsLoading, setAdminBookingsLoading] = useState(false);
+  const [adminBookingsError, setAdminBookingsError] = useState("");
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
   const [adminUsersError, setAdminUsersError] = useState("");
   const [adminUserCounts, setAdminUserCounts] = useState({ total: 0, landlords: 0, tenants: 0 });
   const [anns, setAnns] = useState(SEED_ANNOUNCEMENTS);
   const [tenantAnnouncements, setTenantAnnouncements] = useState([]);
   const [announcementError, setAnnouncementError] = useState("");
-  const [log, setLog] = useState(SEED_LOG);
   const [toast, setToast] = useState(null);
 
   const [selProp, setSelProp] = useState(null);
   const [midx, setMidx] = useState(0);
   const [authModal, setAuthModal] = useState(authMode ? "tenant" : null);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  const [passwordError, setPasswordError] = useState("");
+  const [passwordSuccess, setPasswordSuccess] = useState("");
+  const [passwordSaving, setPasswordSaving] = useState(false);
   const [payModal, setPayModal] = useState(null);
+  const [bookingPaymentModal, setBookingPaymentModal] = useState(null);
+  const [bookingPaymentPhone, setBookingPaymentPhone] = useState("");
+  const [bookingPaymentError, setBookingPaymentError] = useState("");
+  const [bookingPaymentLoading, setBookingPaymentLoading] = useState(false);
+  const [completionLoadingId, setCompletionLoadingId] = useState("");
   const [confModal, setConfModal] = useState(null);
   const [bookingProperty, setBookingProperty] = useState(null);
   const [bookingFormOpen, setBookingFormOpen] = useState(false);
   const [bookingForm, setBookingForm] = useState({ moveInDate: "", leaseMonths: "6", notes: "" });
   const [bookingFormError, setBookingFormError] = useState("");
   const [bookingSubmitting, setBookingSubmitting] = useState(false);
-  const [search, setSearch] = useState("");
-  const [budget, setBudget] = useState("");
-  const [ptype, setPtype] = useState("");
   const [ldTab, setLdTab] = useState("profile");
   const [adTab, setAdTab] = useState("overview");
+  const [bookingConflictId, setBookingConflictId] = useState("");
   const [pendMedia, setPendMedia] = useState([]);
   const [dragOv, setDragOv] = useState(false);
   const [form, setForm] = useState({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});
@@ -155,8 +196,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [cwarn, setCwarn] = useState(false);
   const [authF, setAuthF] = useState({name:"",email:"",password:"",mode:authMode ?? "login"});
   const [authErr, setAuthErr] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
   const [authFieldErrors, setAuthFieldErrors] = useState({});
   const [showPassword, setShowPassword] = useState(false);
+  const [passwordResetForm, setPasswordResetForm] = useState({ newPassword: "", confirmPassword: "" });
+  const [passwordResetLoading, setPasswordResetLoading] = useState(false);
   const [formError, setFormError] = useState("");
   const [formInvalid, setFormInvalid] = useState({});
   const [propLoading, setPropLoading] = useState(false);
@@ -178,6 +222,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const authNameRef = useRef(null);
   const authEmailRef = useRef(null);
   const authPasswordRef = useRef(null);
+  const paymentStatusCheckInFlight = useRef(false);
   const previousAuthModal = useRef(authModal);
 
   useEffect(() => {
@@ -185,12 +230,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     previousAuthModal.current = authModal;
     setAuthF({name:"",email:"",password:"",mode:"login"});
     setAuthErr("");
+    setAuthNotice("");
     setAuthFieldErrors({});
     setShowPassword(false);
   }, [authModal]);
 
   useEffect(() => {
-    if (!authModal && !payModal && !confModal) return undefined;
+    if (!authModal && !payModal && !confModal && !bookingPaymentModal && !passwordModalOpen) return undefined;
     const previousFocus = document.activeElement;
     const modal = modalRef.current;
     modal?.focus();
@@ -199,6 +245,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         setAuthModal(null);
         setPayModal(null);
         setConfModal(null);
+        setBookingPaymentModal(null);
+        if (!passwordSaving) setPasswordModalOpen(false);
       }
       if (event.key !== "Tab" || !modal) return;
       const focusable = modal.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])");
@@ -213,7 +261,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       document.removeEventListener("keydown", handleKeyDown);
       previousFocus?.focus?.();
     };
-  }, [authModal, confModal, payModal]);
+  }, [authModal, bookingPaymentModal, confModal, passwordModalOpen, passwordSaving, payModal]);
 
   useEffect(() => {
     if (!propertyId) return undefined;
@@ -276,6 +324,21 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     }
   }, [user?.role]);
 
+  const loadAdminBookings = useCallback(async (page = 1) => {
+    if (user?.role !== "admin") return;
+    setAdminBookingsLoading(true);
+    setAdminBookingsError("");
+    try {
+      const result = await getAdminBookings({ page, limit: 100 });
+      setAdminBookings(result.bookings || []);
+      setAdminBookingsPagination(result.pagination);
+    } catch (error) {
+      setAdminBookingsError(error.response?.data?.message || error.message || "Unable to load bookings.");
+    } finally {
+      setAdminBookingsLoading(false);
+    }
+  }, [user?.role]);
+
   useEffect(() => {
     if (user?.role !== "admin") return undefined;
 
@@ -286,15 +349,79 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     return () => clearTimeout(timeoutId);
   }, [loadAdminUsers, user?.role]);
 
-  const addLog = (action, detail, kind="info") => setLog(l=>[{id:Date.now(),time:nowStr(),action,detail,kind},...l.slice(0,49)]);
+  useEffect(() => {
+    if (user?.role !== "admin" || adTab !== "test-bookings") return;
+    const timeoutId = setTimeout(() => {
+      void loadAdminBookings();
+    }, 0);
+    return () => clearTimeout(timeoutId);
+  }, [adTab, loadAdminBookings, user?.role]);
+
   const msg = (m, k="ok") => { setToast({m,k}); setTimeout(()=>setToast(null),3000); };
   const bookingStatusLabel = value => String(value || "PENDING").replace(/_/g, " ").toLowerCase().replace(/\b\w/g, char => char.toUpperCase());
   const bookingStatusTone = status => status === "PENDING" ? "sb-pd" : status === "APPROVED" ? "sb-av" : status === "REJECTED" ? "sb-fl" : status === "CANCELLED" ? "sb-bn" : "sb-tk";
+  const updateSearch = value => { setSearch(value); setPropertyPage(1); };
+  const updateBudget = value => { setBudget(value); setPropertyPage(1); };
+  const updatePropertyType = value => { setPtype(value); setPropertyPage(1); };
   const switchAuthMode = mode => {
-    setAuthF({name:"",email:"",password:"",mode});
+    setAuthF(current => ({name:"",email:current.email,password:"",mode}));
     setAuthErr("");
+    setAuthNotice("");
     setAuthFieldErrors({});
     setShowPassword(false);
+    setPasswordResetForm({ newPassword: "", confirmPassword: "" });
+  };
+  const sendPasswordResetLink = async () => {
+    setAuthErr("");
+    setAuthNotice("");
+    if (!authF.email || !/^\S+@\S+\.\S+$/.test(authF.email)) {
+      setAuthErr("Enter a valid email address.");
+      return;
+    }
+
+    setPasswordResetLoading(true);
+    try {
+      const response = await requestPasswordReset(authF.email);
+      setAuthNotice(response.data.message || "If an account exists for that email, password reset instructions will be sent.");
+    } catch (error) {
+      setAuthErr(error.response?.data?.message || error.message || "Unable to request a password reset.");
+    } finally {
+      setPasswordResetLoading(false);
+    }
+  };
+  const submitPasswordReset = async () => {
+    setAuthErr("");
+    setAuthNotice("");
+    if (passwordResetForm.newPassword.length < 8) {
+      setAuthErr("New password must be at least 8 characters.");
+      return;
+    }
+    if (passwordResetForm.newPassword !== passwordResetForm.confirmPassword) {
+      setAuthErr("New password and confirmation do not match.");
+      return;
+    }
+
+    const token = new URLSearchParams(location.search).get("token");
+    if (!token) {
+      setAuthErr("This password reset link is missing its token. Request a new reset link.");
+      return;
+    }
+
+    setPasswordResetLoading(true);
+    try {
+      const response = await completePasswordReset({
+        token,
+        newPassword: passwordResetForm.newPassword,
+      });
+      setPasswordResetForm({ newPassword: "", confirmPassword: "" });
+      switchAuthMode("login");
+      setAuthNotice(response.data.message || "Password reset successfully. You can now sign in.");
+      navigate("/login", { replace: true });
+    } catch (error) {
+      setAuthErr(error.response?.data?.message || error.message || "Unable to reset password.");
+    } finally {
+      setPasswordResetLoading(false);
+    }
   };
   const validateAuth = () => {
     if (authF.mode === "register" && !authF.name.trim()) { authNameRef.current?.focus(); return "Full name is required."; }
@@ -307,17 +434,10 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     .filter(p => user?.role==="admin" ? true : p.approved!==false)
     .sort((a,b) => (b.boosted?1:0)-(a.boosted?1:0));
 
-  const filtered = sorted.filter(p=>{
-    const s=search.toLowerCase();
-    const ms=!s||p.location.toLowerCase().includes(s)||p.title.toLowerCase().includes(s);
-    let mb=true;
-    if(budget==="low") mb=p.rent<15000;
-    else if(budget==="mid") mb=p.rent>=15000&&p.rent<=35000;
-    else if(budget==="high") mb=p.rent>35000;
-    return ms&&mb&&(!ptype||p.type===ptype);
-  });
-  const featuredProps = filtered.filter(p=>p.boosted).slice(0,3);
-  const remainingProps = filtered.filter(p=>!p.boosted);
+  const filtered = sorted;
+  const featuredProps = propertyPage === 1 ? filtered.filter(p=>p.boosted).slice(0,4) : [];
+  const featuredIds = new Set(featuredProps.map(property => property.id));
+  const remainingProps = filtered.filter(property => !featuredIds.has(property.id));
 
   const myProps = user?.role==="landlord" ? props.filter(p=>p.landlordId===user.data.id) : [];
   const myAvailable = myProps.filter(p=>p.status==="available");
@@ -326,7 +446,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const myPending = myProps.filter(p=>p.approved===false);
   const isUnlocked = id => user?.role==="tenant" && user.data.unlocked?.includes(id);
   const tenantUnlockedProps = user?.role==="tenant" ? props.filter(p=>isUnlocked(p.id)) : [];
-  const tenantActivity = user?.role==="tenant" ? log.filter(a=>a.detail.includes(user.data.name)).slice(0,4) : [];
   const unlockedRent = tenantUnlockedProps.reduce((sum,p)=>sum+p.rent,0);
   const tenantFirstName = user?.data?.name?.split(" ")[0] || "Tenant";
   const landFirstName = user?.data?.name?.split(" ")[0] || "Landlord";
@@ -361,14 +480,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       const nextUser = await login({
         email: authF.email,
         password: authF.password,
-        role: role === "admin" ? undefined : role,
+        role: String(role).toUpperCase(),
       });
       if (nextUser.role !== "admin") clearAdminCollections();
       setProfileForm(profileFields(nextUser));
       setAuthModal(null);
       setTab(nextUser.role === "admin" ? "admin" : nextUser.role === "landlord" ? "landlord" : "tenant");
       msg(`Welcome back, ${nextUser.data.name.split(" ")[0]}!`, "ok");
-      addLog("User login", `${nextUser.data.name} (${nextUser.role})`, "info");
     } catch (err) {
       setAuthErr(err.message || "Login failed.");
       setAuthFieldErrors(Object.fromEntries((err.fieldErrors || []).map(item => [item.field, item.message])));
@@ -400,10 +518,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
       if (role === "landlord") {
         setLandlords(l => [...l, nextUser.data]);
-        addLog("Landlord registered", nextUser.data.name, "success");
       } else {
         setTenants(t => [...t, nextUser.data]);
-        addLog("Tenant registered", nextUser.data.name, "success");
       }
 
       setAuthModal(null);
@@ -430,7 +546,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       removeProperty(id)
         .then(() => {
           if(selProp?.id===id) setSelProp(null);
-          addLog("Listing deleted",`ID ${id}`,"warn");
           msg("Listing deleted.","warn");
         })
         .catch(error => msg(error.response?.data?.message || error.message, "err"));
@@ -450,7 +565,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     const nextStatus = p?.status === "taken" ? "AVAILABLE" : "OCCUPIED";
     updatePropertyStatusApi(id, nextStatus)
       .then(() => {
-        addLog("Status changed",`${p?.title} → ${nextStatus === "AVAILABLE" ? "Available" : "Taken"}`,"info");
         msg(nextStatus === "AVAILABLE" ? "↩ Marked Available." : "🏠 Marked Taken.","info");
       })
       .catch(error => msg(error.response?.data?.message || error.message, "err"));
@@ -459,7 +573,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const adminVerify = id => {
     updatePropertyStatusApi(id, "OCCUPIED")
       .then(() => {
-        addLog("Admin verified taken",`ID ${id}`,"success");
         msg("✅ Verified as Taken.","ok");
       })
       .catch(error => msg(error.response?.data?.message || error.message, "err"));
@@ -468,7 +581,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const approveProp = id => {
     approvePropertyApi(id, true)
       .then(() => {
-        addLog("Listing approved",`ID ${id}`,"success");
         msg("✅ Listing approved and live.","ok");
       })
       .catch(error => msg(error.response?.data?.message || error.message, "err"));
@@ -477,7 +589,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const flagProp = id => {
     approvePropertyApi(id, false)
       .then(() => {
-        addLog("Listing flagged",`ID ${id}`,"warn");
         msg("🚩 Listing flagged and hidden.","warn");
       })
       .catch(error => msg(error.response?.data?.message || error.message, "err"));
@@ -493,7 +604,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       setAdminUsers(current => current.map(item => item.id === updatedUser.id ? updatedUser : item));
       setLandlords(current => current.map(item => item.id === updatedUser.id ? updatedUser : item));
       setTenants(current => current.map(item => item.id === updatedUser.id ? updatedUser : item));
-      addLog(nextState ? "User activated" : "User deactivated", `${updatedUser.name} (${updatedUser.role})`, "warn");
       msg(nextState ? "✅ User activated." : "🚫 User deactivated.", nextState ? "ok" : "warn");
     } catch (error) {
       msg(error.response?.data?.message || error.message || "Unable to update user status.", "err");
@@ -516,7 +626,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         landlords: userEntry.role === "LANDLORD" ? Math.max(0, current.landlords - 1) : current.landlords,
         tenants: userEntry.role === "TENANT" ? Math.max(0, current.tenants - 1) : current.tenants,
       }));
-      addLog("User deleted", `${userEntry.name} (${userEntry.role})`, "warn");
       msg("🗑️ User deleted.", "warn");
     } catch (error) {
       msg(error.response?.data?.message || error.message || "Unable to delete user.", "err");
@@ -543,12 +652,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
     setPropLoading(true);
     try {
-      const np = editingProperty
-        ? await updatePropertyApi(editingProperty.id, propertyPayload(form, pendMedia))
-        : await addProperty(propertyPayload(form, pendMedia));
+      if (editingProperty) {
+        await updatePropertyApi(editingProperty.id, propertyPayload(form, pendMedia));
+      } else {
+        await addProperty(propertyPayload(form, pendMedia));
+      }
       setForm({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});
       setPendMedia([]); setCwarn(false); setEditingProperty(null);
-      addLog(editingProperty ? "Listing updated" : "Listing posted",`${np.title} by ${user.data.name}`,"success");
       msg(editingProperty ? "Listing updated." : "Submitted for review.","ok");
       setLdTab("mylistings");
     } catch (error) {
@@ -572,6 +682,40 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       msg(error.message || "Unable to save profile.","err");
     } finally {
       setProfileSaving(false);
+    }
+  };
+
+  const submitPasswordChange = async event => {
+    event.preventDefault();
+    setPasswordError("");
+    setPasswordSuccess("");
+
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      setPasswordError("New password and confirmation do not match.");
+      return;
+    }
+
+    setPasswordSaving(true);
+    try {
+      const response = await changePassword({
+        currentPassword: passwordForm.currentPassword,
+        newPassword: passwordForm.newPassword,
+      });
+      if (!response.data.success) {
+        throw new Error(response.data.message || "Unable to change password.");
+      }
+      setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+      setPasswordSuccess("Password changed successfully.");
+    } catch (error) {
+      const responseData = error.response?.data;
+      const details = responseData?.errors?.map(item => item.message).filter(Boolean) || [];
+      setPasswordError(
+        details.length
+          ? `${responseData.message || "Validation failed"}: ${details.join(", ")}`
+          : responseData?.message || error.message || "Unable to change password."
+      );
+    } finally {
+      setPasswordSaving(false);
     }
   };
 
@@ -608,13 +752,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       await Promise.resolve();
       if(payModal.type==="boost"){
         await featurePropertyApi(payModal.propId, true);
-        addLog("Listing boosted",`ID ${payModal.propId} · KSh ${settings.boostFee}`,"payment");
         msg("⭐ Listing boosted to top!","ok");
       } else {
         const nd={...user.data,unlocked:[...(user.data.unlocked||[]),payModal.propId]};
         updateUser({...user,data:nd});
         setTenants(l=>l.map(t=>t.id===nd.id?nd:t));
-        addLog("Contact unlocked",`${nd.name} · ID ${payModal.propId} · KSh ${settings.unlockFee}`,"payment");
         msg("🔓 Contacts & location unlocked!","ok");
       }
       setPayModal(null);
@@ -682,7 +824,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         notes: bookingForm.notes.trim(),
       });
       msg(`Booking created. Status: ${bookingStatusLabel(created?.status || "PENDING")}.`, "ok");
-      addLog("Booking requested", `${bookingProperty.title} · ${bookingForm.moveInDate}`, "info");
       resetBookingForm();
       await refreshProperties();
     } catch (error) {
@@ -702,14 +843,263 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     }
   };
 
+  const requestBookingCompletion = (booking, action) => {
+    const labels = {
+      REQUEST: {
+        title: "Request tenancy completion",
+        confirmLabel: "Send request",
+        message: "The other party must confirm before the booking closes and the property can be listed again.",
+      },
+      CONFIRM: {
+        title: "Confirm tenancy completion",
+        confirmLabel: "Confirm completion",
+        message: "This will close the booking after mutual confirmation. Payment records remain unchanged; this does not issue a refund.",
+      },
+      WITHDRAW: {
+        title: "Withdraw completion request",
+        confirmLabel: "Withdraw request",
+        message: "The booking will remain active, and the other party will no longer be able to confirm this request.",
+      },
+    };
+    const prompt = labels[action];
+    setConfModal({
+      type: "completion",
+      title: prompt.title,
+      msg2: prompt.message,
+      confirmLabel: prompt.confirmLabel,
+      onConfirm: async () => {
+        setConfModal(null);
+        setCompletionLoadingId(booking.id);
+        try {
+          const updated = await updateBookingCompletion(booking.id, action);
+          msg(updated.status === "COMPLETED"
+            ? "Tenancy completed by mutual confirmation. No refund was issued."
+            : action === "WITHDRAW"
+              ? "Completion request withdrawn."
+              : "Completion request sent. The other party must confirm.");
+          await refreshProperties();
+        } catch (error) {
+          msg(error.response?.data?.message || error.message || "Unable to update tenancy completion.", "err");
+        } finally {
+          setCompletionLoadingId("");
+        }
+      },
+    });
+  };
+
+  const renderCompletionControls = booking => {
+    if (booking.status !== "APPROVED") return null;
+    const role = String(user?.role || "").toUpperCase();
+    const requester = booking.completionRequestedBy;
+    const paymentPending = ["PENDING", "INITIALIZED"].includes(booking.paymentAttemptStatus);
+    if (requester === role) {
+      return (
+        <>
+          <span className="arow-meta" role="status">Waiting for the other party to confirm completion.</span>
+          <button
+            className="bghost"
+            disabled={completionLoadingId === booking.id}
+            onClick={() => requestBookingCompletion(booking, "WITHDRAW")}
+          >
+            Withdraw request
+          </button>
+        </>
+      );
+    }
+    return (
+      <>
+        {paymentPending && <span className="arow-meta">Resolve the pending payment before completing.</span>}
+        <button
+          className={requester ? "bapp" : "bghost"}
+          disabled={paymentPending || completionLoadingId === booking.id}
+          onClick={() => requestBookingCompletion(booking, requester ? "CONFIRM" : "REQUEST")}
+        >
+          {completionLoadingId === booking.id
+            ? "Updating…"
+            : requester
+              ? "Confirm completion"
+              : "Request completion"}
+        </button>
+      </>
+    );
+  };
+
+  const openBookingPayment = async booking => {
+    setBookingPaymentModal({
+      booking,
+      paymentId: null,
+      hasStkPush: false,
+      status: null,
+      message: "",
+      loadingExisting: true,
+    });
+    setBookingPaymentPhone(user?.data?.phone || "");
+    setBookingPaymentError("");
+
+    try {
+      const { payments } = await getPaymentsByBooking(booking.id, { status: "PENDING", limit: 1 });
+      const pendingPayment = payments[0];
+      setBookingPaymentModal(current => current?.booking.id === booking.id
+        ? {
+            ...current,
+            paymentId: pendingPayment?.id || null,
+            hasStkPush: Boolean(pendingPayment?.hasStkPush),
+            status: pendingPayment?.status || null,
+            loadingExisting: false,
+            message: pendingPayment?.hasStkPush
+              ? "An STK request is already in progress. Complete it on your phone, then check the status here."
+              : "",
+          }
+        : current);
+    } catch (error) {
+      setBookingPaymentError(error.message || "Unable to check for an existing payment.");
+      setBookingPaymentModal(current => current?.booking.id === booking.id
+        ? { ...current, loadingExisting: false }
+        : current);
+    }
+  };
+
+  const handleBookingPayment = async () => {
+    if (!bookingPaymentModal) return;
+    setBookingPaymentError("");
+    setBookingPaymentLoading(true);
+
+    try {
+      let paymentId = bookingPaymentModal.paymentId;
+      if (!paymentId) {
+        const payment = await createPayment({
+          bookingId: bookingPaymentModal.booking.id,
+          currency: "KES",
+          method: "MPESA",
+          phone: bookingPaymentPhone.trim(),
+        });
+        paymentId = payment.id;
+        setBookingPaymentModal(current => current
+          ? { ...current, paymentId, status: payment.status }
+          : current);
+      }
+
+      const result = await initiateStkPush(paymentId, bookingPaymentPhone.trim());
+      setBookingPaymentModal(current => current
+        ? {
+            ...current,
+            hasStkPush: true,
+            status: "PENDING",
+            message: result.responseDescription || "STK Push sent. Check your phone and approve the payment request.",
+          }
+        : current);
+    } catch (error) {
+      setBookingPaymentError(error.message || "Unable to initiate M-PESA STK Push.");
+    } finally {
+      setBookingPaymentLoading(false);
+    }
+  };
+
+  const refreshBookingPaymentStatus = useCallback(async (queryDaraja = false) => {
+    if (!bookingPaymentModal?.paymentId || paymentStatusCheckInFlight.current) return;
+    paymentStatusCheckInFlight.current = true;
+    setBookingPaymentError("");
+    setBookingPaymentLoading(true);
+    try {
+      const queryResult = queryDaraja
+        ? await queryStkPushStatus(bookingPaymentModal.paymentId)
+        : null;
+      const payment = queryResult?.payment || await getPayment(bookingPaymentModal.paymentId);
+      setBookingPaymentModal(current => current
+        ? {
+            ...current,
+            status: payment.status,
+            hasStkPush: payment.status === "FAILED" ? false : Boolean(payment.hasStkPush),
+            message: payment.status === "SUCCESS"
+              ? "Payment confirmed successfully."
+              : payment.status === "FAILED"
+                ? (queryResult?.resultCode === 1032
+                    ? "M-PESA request was cancelled. You can try again."
+                    : queryResult?.resultCode === 1037
+                      ? "No response was received on the phone. You can try again."
+                      : queryResult?.resultDescription || "Payment was not completed. You can start a new payment attempt.")
+                : queryResult?.resultDescription
+                  ? `Daraja reports: ${queryResult.resultDescription}. Waiting for final confirmation.`
+                  : "Payment is still pending. Approve the request on your phone if it is waiting there.",
+            paymentId: payment.status === "FAILED" ? null : current.paymentId,
+          }
+        : current);
+      await loadTenantBookings({ limit: 10 });
+    } catch (error) {
+      setBookingPaymentError(error.message || "Unable to refresh payment status.");
+    } finally {
+      paymentStatusCheckInFlight.current = false;
+      setBookingPaymentLoading(false);
+    }
+  }, [bookingPaymentModal, loadTenantBookings]);
+
+  useEffect(() => {
+    if (
+      !bookingPaymentModal?.paymentId ||
+      !bookingPaymentModal.hasStkPush ||
+      bookingPaymentModal.status !== "PENDING"
+    ) return undefined;
+
+    const timer = window.setInterval(() => {
+      void refreshBookingPaymentStatus();
+    }, 4000);
+
+    return () => window.clearInterval(timer);
+  }, [bookingPaymentModal?.paymentId, bookingPaymentModal?.hasStkPush, bookingPaymentModal?.status, refreshBookingPaymentStatus]);
+
   const handleApproveBooking = async bookingId => {
+    setBookingConflictId("");
     try {
       await approveBooking(bookingId);
       msg("Booking approved.", "ok");
       await refreshProperties();
     } catch (error) {
+      const conflictId = error.response?.data?.data?.conflictingBooking?.id;
+      if (error.response?.status === 409 && conflictId) {
+        setBookingConflictId(conflictId);
+        await loadLandlordBookings({ limit: 100 });
+      }
       msg(error.response?.data?.message || error.message || "Unable to approve booking.", "err");
     }
+  };
+
+  const requestMarkTestBooking = booking => {
+    setConfModal({
+      type: "test-data",
+      title: "Mark this booking as test data?",
+      msg2: "This admin-only label is explicit and auditable. Paid or pending-payment bookings cannot be marked.",
+      onConfirm: async () => {
+        try {
+          await markBookingAsTestData(booking.id);
+          await loadAdminBookings(adminBookingsPagination?.page || 1);
+          msg("Booking marked as test data.", "ok");
+        } catch (error) {
+          msg(error.response?.data?.message || error.message || "Unable to mark booking.", "err");
+        } finally {
+          setConfModal(null);
+        }
+      },
+    });
+  };
+
+  const requestCloseTestBooking = booking => {
+    setConfModal({
+      type: "close-test",
+      title: "Close this test booking?",
+      msg2: "The booking will be cancelled. Any paid or pending payment is protected; this action does not issue refunds.",
+      onConfirm: async () => {
+        try {
+          await closeTestBooking(booking.id);
+          await loadAdminBookings(adminBookingsPagination?.page || 1);
+          await refreshProperties();
+          msg("Test booking closed.", "ok");
+        } catch (error) {
+          msg(error.response?.data?.message || error.message || "Unable to close test booking.", "err");
+        } finally {
+          setConfModal(null);
+        }
+      },
+    });
   };
 
   const handleRejectBooking = async bookingId => {
@@ -730,7 +1120,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       await Promise.resolve();
       setAnns(l=>[{id:"A"+Date.now(),...annF,date:todayStr(),active:true},...l]);
       setAnnF({title:"",body:"",type:"success"});
-      addLog("Announcement posted",annF.title,"success");
       msg("✅ Announcement published!","ok");
     } finally {
       setAnnLoading(false);
@@ -747,7 +1136,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       await featurePropertyApi(np.id, true);
       setAdmListF({title:"",location:"",rent:"",rooms:"",type:"Apartment",rules:"",tags:""});
       setAdmMedia([]);
-      addLog("Admin posted listing",np.title,"success");
       msg("✅ Admin listing live & boosted!","ok");
     } catch (error) {
       msg(error.response?.data?.message || error.message || "Unable to post listing.", "err");
@@ -766,9 +1154,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const canManage = liveProp && (user?.role==="admin"||(user?.role==="landlord"&&liveProp.landlordId===user?.data?.id));
   const activeAnns = anns.filter(a=>a.active);
   const activeTab = tab;
-  const navigate = useNavigate();
-  const location = useLocation();
-
   const closeModal = () => {
     if (location.pathname.startsWith("/property/")) {
       const returnTo = location.state?.from || "/";
@@ -799,7 +1184,19 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   return (
     <div>
       {/* HEADER */}
-      <Navbar tab={tab} setTab={setTab} user={user} logout={logout} setAuthModal={setAuthModal} />
+      <Navbar
+        tab={tab}
+        setTab={setTab}
+        user={user}
+        logout={logout}
+        setAuthModal={setAuthModal}
+        onChangePassword={() => {
+          setPasswordError("");
+          setPasswordSuccess("");
+          setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+          setPasswordModalOpen(true);
+        }}
+      />
 
       {/* ANN BAR */}
       {tenantAnnouncements.length>0 && tab!=="admin" && (
@@ -832,8 +1229,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       {activeTab==="home" && <>
         <Hero user={user} setTab={setTab} setAuthModal={setAuthModal} unlockFee={settings.unlockFee} />
         <div className="statsbar">
-          <div className="stitem"><span className="stnum">{props.filter(p=>p.approved!==false).length}+</span><span className="stlbl">Listings</span></div>
-          <div className="stitem"><span className="stnum">{props.filter(p=>p.status==="available"&&p.approved!==false).length}</span><span className="stlbl">Available</span></div>
+          <div className="stitem"><span className="stnum">{propertyPagination?.total ?? props.length}+</span><span className="stlbl">Listings</span></div>
+          <div className="stitem"><span className="stnum">{props.filter(p=>p.status==="available"&&p.approved!==false).length}</span><span className="stlbl">Available on this page</span></div>
           <div className="stitem"><span className="stnum">—</span><span className="stlbl">Landlords</span></div>
           <div className="stitem"><span className="stnum">12</span><span className="stlbl">Cities</span></div>
         </div>
@@ -845,20 +1242,23 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         <div className="page">
           <div className="home-search-head">
             <div className="sh"><div className="shey">Browse homes</div><div className="shtt">Find your next home</div></div>
-            <button className="bghost" onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>
+            <button className="bghost" onClick={() => { updateSearch(""); updateBudget(""); updatePropertyType(""); }}>Clear filters</button>
           </div>
-          <SearchBar search={search} setSearch={setSearch} budget={budget} setBudget={setBudget} ptype={ptype} setPtype={setPtype} onSearch={() => document.getElementById("home-results")?.scrollIntoView({ behavior: "smooth", block: "start" })} />
+          <SearchBar search={search} setSearch={updateSearch} budget={budget} setBudget={updateBudget} ptype={ptype} setPtype={updatePropertyType} onSearch={() => document.getElementById("home-results")?.scrollIntoView({ behavior: "smooth", block: "start" })} />
           {propertiesLoading && <PropertySkeletons />}
           {!propertiesLoading && !propertiesError && <>
-            <div className="sh featured-heading"><div className="shey">Featured & Boosted</div><div className="shtt">A few places worth seeing</div></div>
-            <PropertyGrid className="pgrid featured-grid" properties={featuredProps.slice(0, 4)} onView={openProperty} user={user} onDel={deleteProp} favorites={favorites} onToggleFavorite={toggleFavorite} />
+            {featuredProps.length > 0 && <>
+              <div className="sh featured-heading"><div className="shey">Featured & Boosted</div><div className="shtt">A few places worth seeing</div></div>
+              <PropertyGrid className="pgrid featured-grid" properties={featuredProps} onView={openProperty} user={user} onDel={deleteProp} favorites={favorites} onToggleFavorite={toggleFavorite} />
+            </>}
             <div id="home-results" className="home-results-head">
               <div className="sh"><div className="shey">More listings</div><div className="shtt">Homes matching your search</div></div>
-              <span className="result-count">{filtered.length} {filtered.length === 1 ? "home" : "homes"}</span>
+              <span className="result-count">{propertyPagination?.total ?? filtered.length} {(propertyPagination?.total ?? filtered.length) === 1 ? "home" : "homes"}</span>
             </div>
             {remainingProps.length === 0
               ? <div className="noresult"><h3>{filtered.length === 0 ? "No listings found" : "You are viewing all matching featured listings"}</h3><p>{filtered.length === 0 ? "Try adjusting your filters or clear the search to see all available homes." : "Try another search to discover more homes."}</p>{filtered.length === 0 && <button onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>}</div>
               : <PropertyGrid properties={remainingProps} onView={openProperty} user={user} onDel={deleteProp} favorites={favorites} onToggleFavorite={toggleFavorite} />}
+            <PropertyPagination pagination={propertyPagination} loading={propertiesLoading} onPageChange={setPropertyPage} />
           </>}
         </div>
       </>}
@@ -889,8 +1289,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 </div>
                 <div className="tkpi">
                   <div className="tkpi-label">Homes matching filters</div>
-                  <strong>{filtered.length}</strong>
-                  <div className="tkpi-note">{filtered.filter(p=>p.status==="available").length} available to view.</div>
+                  <strong>{propertyPagination?.total ?? filtered.length}</strong>
+                  <div className="tkpi-note">{filtered.filter(p=>p.status==="available").length} available on this page.</div>
                 </div>
               </div>
               {tenantUnlockedProps.length > 0 ? (
@@ -939,10 +1339,42 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                         <div className="arow-info">
                           <div className="arow-title">{booking.property?.title || "Property booking"}</div>
                           <div className="arow-meta">📍 {bookingLocation(booking.property?.location) || "Location not available"} · Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
+                          <div className="booking-journey" aria-label={`Booking progress: ${bookingStatusLabel(booking.status)}, ${bookingStatusLabel(booking.paymentStatus || "UNPAID")}`}>
+                            {["Requested", "Approved", "Payment pending", "Paid"].map((step, index) => {
+                              const activeStep = booking.status === "PENDING" ? 0
+                                : booking.status !== "APPROVED" ? -1
+                                  : booking.paymentStatus === "PAID" ? 3
+                                    : booking.paymentAttemptStatus === "PENDING" || booking.paymentStatus === "PARTIAL" ? 2 : 1;
+                              return <span key={step} className={index <= activeStep ? "complete" : ""}>{step}</span>;
+                            })}
+                          </div>
+                          {["CANCELLED", "REJECTED", "COMPLETED"].includes(booking.status) && (
+                            <div className="arow-meta">Journey ended: {bookingStatusLabel(booking.status)}.</div>
+                          )}
+                          {booking.status === "COMPLETED" && (
+                            <div className="arow-meta">Payment records are retained; completion does not issue a refund.</div>
+                          )}
                         </div>
                         <div className="arow-acts">
                           <span className={`sbadge ${bookingStatusTone(booking.status)}`}>{bookingStatusLabel(booking.status)}</span>
-                          {(booking.status === "PENDING" || booking.status === "APPROVED") && (
+                          {booking.status === "APPROVED" && (
+                            <>
+                              <span className={`sbadge ${booking.paymentStatus === "PAID" ? "sb-av" : "sb-pd"}`}>{bookingStatusLabel(booking.paymentStatus || "UNPAID")}</span>
+                              {booking.paymentAttemptStatus === "FAILED" && <span className="arow-meta" role="status">Last payment attempt failed; retry when ready.</span>}
+                              {booking.paymentAttemptStatus === "INITIALIZED" && <span className="arow-meta" role="status">Payment is set up but no STK prompt was sent yet.</span>}
+                              {booking.paymentStatus !== "PAID" && booking.paymentAttemptStatus !== "PENDING" && (
+                                <button className="bapp" onClick={() => void openBookingPayment(booking)}>Pay with M-PESA</button>
+                              )}
+                              {booking.paymentAttemptStatus === "PENDING" && (
+                                <>
+                                  <span className="sbadge sb-pd">Payment pending</span>
+                                  <button className="bghost" onClick={() => void openBookingPayment(booking)}>Check payment status</button>
+                                </>
+                              )}
+                            </>
+                          )}
+                          {renderCompletionControls(booking)}
+                          {(booking.status === "PENDING" || (booking.status === "APPROVED" && booking.paymentStatus === "UNPAID" && !["PENDING", "INITIALIZED"].includes(booking.paymentAttemptStatus))) && (
                             <button className="bdel" onClick={()=>handleTenantCancelBooking(booking.id)}>Cancel</button>
                           )}
                         </div>
@@ -952,36 +1384,16 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 )}
               </div>
 
-              {tenantActivity.length > 0 && (
-                <div className="tactivity">
-                  <div className="tactivity-head">
-                    <div>
-                      <h3>Local activity</h3>
-                      <p>Recent activity from this browser. Account activity will appear here in a future integration.</p>
-                    </div>
-                  </div>
-                  {tenantActivity.map(a=>(
-                    <div key={a.id} className="tact-row">
-                      <span className={`tact-dot ${a.kind}`}/>
-                      <div className="tact-body">
-                        <div className="tact-title">{a.action}</div>
-                        <div className="tact-detail">{a.detail}</div>
-                      </div>
-                      <div className="tact-time">{a.time}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
             </>
           )}
           <div className="sh"><div className="shey">Browse listings</div><div className="shtt">Find Your Home</div></div>
-          <SearchBar search={search} setSearch={setSearch} budget={budget} setBudget={setBudget} ptype={ptype} setPtype={setPtype} />
+          <SearchBar search={search} setSearch={updateSearch} budget={budget} setBudget={updateBudget} ptype={ptype} setPtype={updatePropertyType} />
           {propertiesLoading
             ? <PropertySkeletons />
             : propertiesError
             ? <div className="form-error" role="alert">Unable to load tenant properties: {propertiesError}</div>
             : filtered.length===0
-            ? <div className="noresult"><h3>No listings found</h3><p>There are no homes matching these filters right now.</p><div className="empty-actions"><button onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button><button onClick={() => { setSearch(""); setBudget(""); setPtype(""); setTab("home"); }}>Browse all homes</button></div></div>
+            ? <div className="noresult"><h3>No listings found</h3><p>There are no homes matching these filters right now.</p><div className="empty-actions"><button onClick={() => { updateSearch(""); updateBudget(""); updatePropertyType(""); }}>Clear filters</button><button onClick={() => { updateSearch(""); updateBudget(""); updatePropertyType(""); setTab("home"); }}>Browse all homes</button></div></div>
             : <PropertyGrid
                 properties={filtered}
                 onView={openProperty}
@@ -990,6 +1402,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 favorites={favorites}
                 onToggleFavorite={toggleFavorite}
               />}
+          <PropertyPagination pagination={propertyPagination} loading={propertiesLoading} onPageChange={setPropertyPage} />
         </div>
       )}
 
@@ -1023,6 +1436,18 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
           <div className="fcard" style={{marginBottom:"1.5rem"}}>
             <h3>Booking Requests</h3>
             <p className="sub">Manage tenant requests for properties you own.</p>
+            {bookingConflictId && (
+              <div className="form-error booking-conflict" role="alert">
+                This property already has an approved booking. The existing booking is still active.
+                <button
+                  type="button"
+                  className="bghost"
+                  onClick={() => document.getElementById(`booking-${bookingConflictId}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                >
+                  View its status
+                </button>
+              </div>
+            )}
             {landlordLoading && <div className="empty-adm"><p>Loading booking requests…</p></div>}
             {!landlordLoading && landlordError && <div className="form-error" role="alert">{landlordError}</div>}
             {!landlordLoading && !landlordError && landlordBookings.length === 0 && (
@@ -1031,7 +1456,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             {!landlordLoading && !landlordError && landlordBookings.length > 0 && (
               <div style={{display:"grid",gap:"0.85rem"}}>
                 {landlordBookings.map(booking => (
-                  <div key={booking.id} className="arow" style={{borderLeft:"3px solid rgba(39, 108, 68, 0.75)"}}>
+                  <div id={`booking-${booking.id}`} key={booking.id} className="arow" style={{borderLeft:"3px solid rgba(39, 108, 68, 0.75)"}}>
                     <div className="arow-icon" style={{background:"#2D5016"}}>{(booking.tenant?.firstName || booking.tenant?.name || "T").slice(0,1).toUpperCase()}</div>
                     <div className="arow-info">
                       <div className="arow-title">{booking.tenant?.firstName && booking.tenant?.lastName ? `${booking.tenant.firstName} ${booking.tenant.lastName}` : booking.tenant?.name || "Tenant"} · {booking.property?.title || "Property"}</div>
@@ -1046,9 +1471,40 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                           <button className="bdel" onClick={()=>handleRejectBooking(booking.id)}>Reject</button>
                         </>
                       )}
+                      {booking.status === "APPROVED" && (
+                        <>
+                          <span className={`sbadge ${booking.paymentStatus === "PAID" ? "sb-av" : "sb-pd"}`}>{bookingStatusLabel(booking.paymentStatus || "UNPAID")}</span>
+                          {renderCompletionControls(booking)}
+                        </>
+                      )}
+                      {booking.status === "COMPLETED" && (
+                        <span className="arow-meta">Payment records retained; no refund issued.</span>
+                      )}
                     </div>
                   </div>
                 ))}
+                {landlordBookingsPagination && landlordBookingsPagination.totalPages > 1 && (
+                  <div className="arow-acts" style={{justifyContent:"space-between",marginTop:"1rem"}}>
+                    <button
+                      className="bghost"
+                      disabled={!landlordBookingsPagination.hasPrevPage || landlordLoading}
+                      onClick={() => void loadLandlordBookings({ page: landlordBookingsPagination.page - 1 })}
+                    >
+                      Previous
+                    </button>
+                    <span className="arow-meta">
+                      Page {landlordBookingsPagination.page} of {landlordBookingsPagination.totalPages}
+                      {" · "}{landlordBookingsPagination.total} bookings
+                    </span>
+                    <button
+                      className="bghost"
+                      disabled={!landlordBookingsPagination.hasNextPage || landlordLoading}
+                      onClick={() => void loadLandlordBookings({ page: landlordBookingsPagination.page + 1 })}
+                    >
+                      Next
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1077,6 +1533,38 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 </div>
                 <div className="fg"><label>Phone</label><input value={profileForm.phone} onChange={e=>setProfileForm({...profileForm,phone:e.target.value})} disabled={profileSaving} /></div>
                 <button className="bp" onClick={saveProfile} disabled={profileSaving} aria-busy={profileSaving}>{profileSaving ? "Saving profile…" : "Save Profile →"}</button>
+              </div>}
+
+              {adTab==="test-bookings" && <div className="atab">
+                <h3>Test booking cleanup</h3>
+                <p className="sub">Only bookings explicitly marked by an administrator can be cleaned up. Paid or pending payments are never reversed here.</p>
+                <button className="bghost" type="button" onClick={() => void loadAdminBookings(adminBookingsPagination?.page || 1)} disabled={adminBookingsLoading}>
+                  {adminBookingsLoading ? "Loading…" : "Refresh bookings"}
+                </button>
+                {adminBookingsError && <div className="form-error" role="alert">{adminBookingsError}</div>}
+                {adminBookingsLoading && <div className="empty-adm"><p>Loading bookings…</p></div>}
+                {!adminBookingsLoading && !adminBookingsError && adminBookings.length === 0 && <div className="empty-adm"><p>No bookings found.</p></div>}
+                {!adminBookingsLoading && adminBookings.map(booking => (
+                  <div key={booking.id} className="arow">
+                    <div className="arow-info">
+                      <div className="arow-title">{booking.property?.title || "Property booking"}</div>
+                      <div className="arow-meta">Booking {booking.id} · {bookingStatusLabel(booking.status)} · {bookingStatusLabel(booking.paymentStatus || "UNPAID")}</div>
+                      {booking.isTestData && <div className="arow-meta">Explicitly marked as test data</div>}
+                    </div>
+                    <div className="arow-acts">
+                      {booking.isTestData
+                        ? <button className="bdel" disabled={booking.status !== "PENDING" && booking.status !== "APPROVED"} onClick={() => requestCloseTestBooking(booking)}>Close test booking</button>
+                        : <button className="bapp" disabled={booking.status === "COMPLETED" || booking.paymentStatus !== "UNPAID" || Number(booking.amountPaid || 0) > 0 || ["PENDING", "INITIALIZED"].includes(booking.paymentAttemptStatus)} onClick={() => requestMarkTestBooking(booking)}>Mark as test data</button>}
+                    </div>
+                  </div>
+                ))}
+                {adminBookingsPagination && adminBookingsPagination.totalPages > 1 && (
+                  <div className="arow-acts" style={{justifyContent:"space-between",marginTop:"1rem"}}>
+                    <button className="bghost" disabled={!adminBookingsPagination.hasPrevPage || adminBookingsLoading} onClick={() => void loadAdminBookings(adminBookingsPagination.page - 1)}>Previous</button>
+                    <span className="arow-meta">Page {adminBookingsPagination.page} of {adminBookingsPagination.totalPages}</span>
+                    <button className="bghost" disabled={!adminBookingsPagination.hasNextPage || adminBookingsLoading} onClick={() => void loadAdminBookings(adminBookingsPagination.page + 1)}>Next</button>
+                  </div>
+                )}
               </div>}
 
               {ldTab==="social" && <div className="fcard">
@@ -1229,11 +1717,12 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     ["flagged","🚩","Flagged",flagged.length],
                     ["pending","⏳","Pending",pending.length],
                     ["verify","✅","Verify Taken",taken.length],
+                    ["test-bookings","🧹","Test Bookings"],
                     ["users","👥","Users",adminUserCounts.total],
                     ["announce","📢","Announcements",activeAnns.length],
                     ["post","➕","Post New Listing"],
                     ["settings","⚙️","Site Settings"],
-                    ["activity","📋","Activity Log",log.length],
+                    ["activity","📋","Activity Log"],
                   ].map(([k,ic,lb,cnt])=>(
                     <button key={k} className={`snb${adTab===k?" on":""}`} onClick={()=>setAdTab(k)}>
                       <span className="snbi">{ic}</span>{lb}
@@ -1278,15 +1767,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     <div className="akpi"><div className="akpi-icon">👷</div><div className="akpi-val blu">{adminUserCounts.landlords}</div><div className="akpi-lbl">Landlords</div></div>
                     <div className="akpi"><div className="akpi-icon">👤</div><div className="akpi-val blu">{adminUserCounts.tenants}</div><div className="akpi-lbl">Tenants</div></div>
                     <div className="akpi"><div className="akpi-icon">📢</div><div className="akpi-val">{activeAnns.length}</div><div className="akpi-lbl">Announcements</div></div>
-                  </div>
-                  <h3 style={{color:"#C4991A",marginBottom:"0.4rem",fontSize:"1.2rem"}}>Recent Activity</h3>
-                  <div className="actlog">
-                    {log.slice(0,8).map(a=>(
-                      <div key={a.id} className="actrow">
-                        <div className={`actdot ${a.kind}`}/><span className="actt">{a.time}</span>
-                        <span className="acta">{a.action}</span><span className="actd">— {a.detail}</span>
-                      </div>
-                    ))}
                   </div>
                 </div>}
 
@@ -1511,18 +1991,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 </div>}
 
                 {/* ACTIVITY LOG */}
-                {adTab==="activity" && <div className="atab">
-                  <h3>Activity Log</h3><p className="sub">Full audit trail of all platform actions.</p>
-                  <div className="actlog">
-                    {log.length===0 && <div className="empty-adm"><p>No activity yet.</p></div>}
-                    {log.map(a=>(
-                      <div key={a.id} className="actrow">
-                        <div className={`actdot ${a.kind}`}/><span className="actt">{a.time}</span>
-                        <span className="acta">{a.action}</span><span className="actd">— {a.detail}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>}
+                {adTab==="activity" && <AdminActivityLog />}
               </div>
             </div>
           </div>
@@ -1560,8 +2029,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             <div className="mhero" style={{background:`linear-gradient(135deg,${liveProp.color}cc,${liveProp.color}77)`}}>
               {liveProp.media?.length>0 ? (
                 liveProp.media[midx]?.type==="video"
-                  ? <video src={liveProp.media[midx].url} autoPlay muted loop playsInline preload="metadata" alt={liveProp.title} />
-                  : <img src={liveProp.media[midx].url} alt={liveProp.title} />
+                  ? <video src={liveProp.media[midx].url} autoPlay muted loop playsInline preload="metadata" aria-label={liveProp.title} />
+                  : <img src={liveProp.media[midx].url} alt={liveProp.title} decoding="async" />
               ) : (
                 <div className="mhero-empty" aria-label={`${liveProp.title} image unavailable`}>
                   <span className="fallback-mark">⌂</span><strong>{liveProp.initials}</strong><small>Image coming soon</small>
@@ -1641,25 +2110,35 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
           <div ref={modalRef} className="mdl auth" role="dialog" aria-modal="true" aria-labelledby="auth-title">
             <button className="mclose" aria-label="Close authentication" onClick={()=>setAuthModal(null)}>✕</button>
             <div className="auth-head">
-              <div className="auth-icon">{authModal==="admin"?"🔐":authModal==="landlord"?"🏠":"👤"}</div>
+              <div className="auth-icon">{authF.mode==="forgot"||authF.mode==="reset"?"🔐":authModal==="admin"?"🔐":authModal==="landlord"?"🏠":"👤"}</div>
               <div>
-                <h2 id="auth-title" className="auth-title">{authModal==="admin"?"Admin Access":authModal==="landlord"?"Landlord Portal":"Tenant Portal"}</h2>
+                <h2 id="auth-title" className="auth-title">
+                  {authF.mode==="forgot" ? "Reset your password"
+                    : authF.mode==="reset" ? "Choose a new password"
+                      : authModal==="admin" ? "Admin Access"
+                        : authModal==="landlord" ? "Landlord Portal" : "Tenant Portal"}
+                </h2>
                 <p className="auth-subtitle">
-                  {authModal==="admin"
-                    ? "Restricted access for administrators only."
-                    : authModal==="landlord"
-                    ? "Join free to list properties, manage bookings and share your space."
-                    : `Browse verified homes and unlock landlord contacts for KSh ${settings.unlockFee}.`}
+                  {authF.mode==="forgot"
+                    ? "Enter your account email and we’ll send a secure, time-limited reset link if an account exists."
+                    : authF.mode==="reset"
+                      ? "Choose a new password with at least 8 characters."
+                      : authModal==="admin"
+                        ? "Restricted access for administrators only."
+                        : authModal==="landlord"
+                          ? "Join free to list properties, manage bookings and share your space."
+                          : `Browse verified homes and unlock landlord contacts for KSh ${settings.unlockFee}.`}
                 </p>
               </div>
             </div>
-            {authModal!=="admin" && (
+            {(authF.mode==="login" || authF.mode==="register") && authModal!=="admin" && (
               <div className="auth-tabs">
                 <button className={`at${authF.mode==="login"?" on":""}`} onClick={()=>switchAuthMode("login")}>Sign In</button>
                 <button className={`at${authF.mode==="register"?" on":""}`} onClick={()=>switchAuthMode("register")}>Sign Up Free</button>
               </div>
             )}
             {authErr && <div className="aerr">⚠️ {authErr}</div>}
+            {authNotice && <div className="field-success" role="status">{authNotice}</div>}
             {authF.mode==="register" && authModal!=="admin" && (
               <div className="fg">
                 <label>Full Name</label>
@@ -1667,20 +2146,68 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 {authFieldErrors.name && <div className="field-error" role="alert">{authFieldErrors.name}</div>}
               </div>
             )}
-                  <div className="fg">
-              <label>{authModal==="admin"?"Username":"Email"}</label>
-              <input ref={authEmailRef} maxLength={120} type={authModal==="admin"?"text":"email"} placeholder={authModal==="admin"?"admin":"you@example.com"} value={authF.email} onChange={e=>{setAuthF({...authF,email:e.target.value});setAuthErr("");setAuthFieldErrors(current=>({...current,email:undefined}));}} disabled={authLoading} aria-invalid={Boolean(authFieldErrors.email || (authErr && !/^\S+@\S+\.\S+$/.test(authF.email)))} />
-              {authFieldErrors.email && <div className="field-error" role="alert">{authFieldErrors.email}</div>}
-            </div>
-            <div className="fg">
-              <label>Password</label>
-              <div className="password-field"><input ref={authPasswordRef} maxLength={128} type={showPassword ? "text" : "password"} placeholder="••••••••" value={authF.password} onChange={e=>{setAuthF({...authF,password:e.target.value});setAuthErr("");setAuthFieldErrors(current=>({...current,password:undefined}));}} disabled={authLoading} aria-invalid={Boolean(authFieldErrors.password || (authErr && authF.password.length < 8))} /><button type="button" className="password-toggle" onClick={() => setShowPassword(visible => !visible)} aria-label={showPassword ? "Hide password" : "Show password"} title={showPassword ? "Hide password" : "Show password"}>{showPassword ? "🙈" : "👁"}</button></div>
-              {authFieldErrors.password && <div className="field-error" role="alert">{authFieldErrors.password}</div>}
-            </div>
-            <button className="bp auth-submit" onClick={()=>authF.mode==="register"?doRegister(authModal):doLogin(authModal)} disabled={authLoading} aria-busy={authLoading}>
-              {authLoading ? <><span className="button-spinner" aria-hidden="true" /> {authF.mode==="register" ? "Creating account…" : "Signing in…"}</> : authF.mode==="register" ? "Create Free Account →" : "Sign In →"}
-            </button>
-            {authModal!=="admin" && (
+            {authF.mode!=="reset" && (
+              <div className="fg">
+                <label>Email</label>
+                <input ref={authEmailRef} maxLength={120} type="email" autoComplete="email" placeholder="you@example.com" value={authF.email} onChange={e=>{setAuthF({...authF,email:e.target.value});setAuthErr("");setAuthNotice("");setAuthFieldErrors(current=>({...current,email:undefined}));}} disabled={authLoading || passwordResetLoading} aria-invalid={Boolean(authFieldErrors.email || (authErr && authF.email && !/^\S+@\S+\.\S+$/.test(authF.email)))} />
+                {authFieldErrors.email && <div className="field-error" role="alert">{authFieldErrors.email}</div>}
+              </div>
+            )}
+            {(authF.mode==="login" || authF.mode==="register") && (
+              <div className="fg">
+                <label>Password</label>
+                <div className="password-field"><input ref={authPasswordRef} maxLength={128} type={showPassword ? "text" : "password"} autoComplete={authF.mode==="register"?"new-password":"current-password"} placeholder="••••••••" value={authF.password} onChange={e=>{setAuthF({...authF,password:e.target.value});setAuthErr("");setAuthNotice("");setAuthFieldErrors(current=>({...current,password:undefined}));}} disabled={authLoading} aria-invalid={Boolean(authFieldErrors.password || (authErr && authF.password.length < 8))} /><button type="button" className="password-toggle" onClick={() => setShowPassword(visible => !visible)} aria-label={showPassword ? "Hide password" : "Show password"} title={showPassword ? "Hide password" : "Show password"}>{showPassword ? "🙈" : "👁"}</button></div>
+                {authFieldErrors.password && <div className="field-error" role="alert">{authFieldErrors.password}</div>}
+                {authF.mode==="login" && (
+                  <div className="auth-forgot-row">
+                    <button type="button" className="auth-forgot-link" onClick={()=>switchAuthMode("forgot")}>Forgot password?</button>
+                  </div>
+                )}
+              </div>
+            )}
+            {authF.mode==="reset" && new URLSearchParams(location.search).get("token") && (
+              <>
+                <div className="fg">
+                  <label htmlFor="reset-new-password">New password</label>
+                  <input id="reset-new-password" type="password" autoComplete="new-password" minLength={8} value={passwordResetForm.newPassword} onChange={event=>setPasswordResetForm(current=>({...current,newPassword:event.target.value}))} disabled={passwordResetLoading} required />
+                </div>
+                <div className="fg">
+                  <label htmlFor="reset-confirm-password">Confirm new password</label>
+                  <input id="reset-confirm-password" type="password" autoComplete="new-password" minLength={8} value={passwordResetForm.confirmPassword} onChange={event=>setPasswordResetForm(current=>({...current,confirmPassword:event.target.value}))} disabled={passwordResetLoading} required />
+                </div>
+              </>
+            )}
+            {authF.mode==="reset" && !new URLSearchParams(location.search).get("token") && (
+              <div className="aerr" role="alert">This reset link is missing its token. Request a new one.</div>
+            )}
+            {authF.mode==="forgot" && (
+              <button className="bp auth-submit" type="button" onClick={()=>void sendPasswordResetLink()} disabled={passwordResetLoading} aria-busy={passwordResetLoading}>
+                {passwordResetLoading ? "Sending reset link…" : "Send reset link"}
+              </button>
+            )}
+            {authF.mode==="reset" && new URLSearchParams(location.search).get("token") && (
+              <button className="bp auth-submit" type="button" onClick={()=>void submitPasswordReset()} disabled={passwordResetLoading} aria-busy={passwordResetLoading}>
+                {passwordResetLoading ? "Updating password…" : "Reset password"}
+              </button>
+            )}
+            {(authF.mode==="login" || authF.mode==="register") && (
+              <button className="bp auth-submit" type="button" onClick={()=>authF.mode==="register"?doRegister(authModal):doLogin(authModal)} disabled={authLoading} aria-busy={authLoading}>
+                {authLoading ? <><span className="button-spinner" aria-hidden="true" /> {authF.mode==="register" ? "Creating account…" : "Signing in…"}</> : authF.mode==="register" ? "Create Free Account →" : "Sign In →"}
+              </button>
+            )}
+            {authF.mode==="forgot" && (
+              <p className="auth-switch">
+                Remembered it?
+                <button type="button" className="auth-switch-btn" onClick={()=>switchAuthMode("login")}>Back to sign in</button>
+              </p>
+            )}
+            {authF.mode==="reset" && (
+              <p className="auth-switch">
+                Need a different link?
+                <button type="button" className="auth-switch-btn" onClick={()=>switchAuthMode("forgot")}>Request another</button>
+              </p>
+            )}
+            {(authF.mode==="login" || authF.mode==="register") && authModal!=="admin" && (
               <p className="auth-switch">
                 {authF.mode==="login" ? "New to HouseHunt?" : "Already have an account?"}
                   <button type="button" className="auth-switch-btn" onClick={()=>switchAuthMode(authF.mode==="login"?"register":"login")}>
@@ -1688,6 +2215,73 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 </button>
               </p>
             )}
+          </div>
+        </div>
+      )}
+
+      {passwordModalOpen && (
+        <div className="mov" role="presentation" onClick={event => event.target === event.currentTarget && !passwordSaving && setPasswordModalOpen(false)}>
+          <div ref={modalRef} className="mdl auth" role="dialog" aria-modal="true" aria-labelledby="password-title" tabIndex={-1}>
+            <button
+              className="mclose"
+              aria-label="Close change password"
+              onClick={() => setPasswordModalOpen(false)}
+              disabled={passwordSaving}
+            >
+              ✕
+            </button>
+            <div className="auth-head">
+              <div className="auth-icon">🔐</div>
+              <div>
+                <h2 id="password-title" className="auth-title">Change password</h2>
+                <p className="auth-subtitle">Enter your current password, then choose a new password with at least 8 characters.</p>
+              </div>
+            </div>
+            <form onSubmit={submitPasswordChange}>
+              <div className="fg">
+                <label htmlFor="current-password">Current password</label>
+                <input
+                  id="current-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={passwordForm.currentPassword}
+                  onChange={event => setPasswordForm(current => ({ ...current, currentPassword: event.target.value }))}
+                  required
+                  disabled={passwordSaving}
+                />
+              </div>
+              <div className="fg">
+                <label htmlFor="new-password">New password</label>
+                <input
+                  id="new-password"
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={8}
+                  value={passwordForm.newPassword}
+                  onChange={event => setPasswordForm(current => ({ ...current, newPassword: event.target.value }))}
+                  required
+                  disabled={passwordSaving}
+                />
+              </div>
+              <div className="fg">
+                <label htmlFor="confirm-password">Confirm new password</label>
+                <input
+                  id="confirm-password"
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={8}
+                  value={passwordForm.confirmPassword}
+                  onChange={event => setPasswordForm(current => ({ ...current, confirmPassword: event.target.value }))}
+                  required
+                  disabled={passwordSaving}
+                />
+              </div>
+              {passwordError && <div className="form-error" role="alert">{passwordError}</div>}
+              {passwordSuccess && <div className="field-success" role="status">{passwordSuccess}</div>}
+              <button className="bp auth-submit" type="submit" disabled={passwordSaving} aria-busy={passwordSaving}>
+                {passwordSaving ? "Updating password…" : "Update password"}
+              </button>
+            </form>
           </div>
         </div>
       )}
@@ -1710,16 +2304,62 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         </div>
       )}
 
+      {bookingPaymentModal && (
+        <div className="mov" onClick={event => event.target === event.currentTarget && setBookingPaymentModal(null)}>
+          <div ref={modalRef} className="mdl pay" role="dialog" aria-modal="true" aria-labelledby="booking-payment-title" tabIndex={-1}>
+            <button className="mclose" style={{position:"static",float:"right",marginBottom:"0.4rem"}} onClick={() => setBookingPaymentModal(null)}>✕</button>
+            <div style={{fontSize:"2.4rem",marginBottom:"0.4rem"}}>📱</div>
+            <h2 id="booking-payment-title" style={{fontFamily:"Cormorant Garamond,serif",fontSize:"1.5rem",fontWeight:700,marginBottom:"0.25rem"}}>Pay booking with M-PESA</h2>
+            <p style={{color:"#777",fontSize:"0.9rem",marginBottom:"0.6rem"}}>{bookingPaymentModal.booking.property?.title || "Approved booking"}</p>
+            <div className="payamt">{KES(bookingPaymentModal.booking.totalDue ?? bookingPaymentModal.booking.monthlyRent ?? bookingPaymentModal.booking.property?.price)} <small>KES due</small></div>
+            {bookingPaymentModal.loadingExisting
+              ? <p className="paynote">Checking for an existing payment…</p>
+              : (
+                <>
+                  {!bookingPaymentModal.hasStkPush && bookingPaymentModal.status !== "SUCCESS" && (
+                    <div className="fg" style={{textAlign:"left",marginTop:"1rem"}}>
+                      <label htmlFor="booking-payment-phone">M-PESA phone number</label>
+                      <input
+                        id="booking-payment-phone"
+                        type="tel"
+                        autoComplete="tel"
+                        placeholder="0712345678"
+                        value={bookingPaymentPhone}
+                        onChange={event => setBookingPaymentPhone(event.target.value)}
+                        disabled={bookingPaymentLoading}
+                      />
+                    </div>
+                  )}
+                  {bookingPaymentError && <div className="form-error" role="alert">{bookingPaymentError}</div>}
+                  {bookingPaymentModal.message && <p className="paynote" role="status">{bookingPaymentModal.message}</p>}
+                  {bookingPaymentModal.status === "SUCCESS" ? (
+                    <button className="mpesabtn" onClick={() => setBookingPaymentModal(null)}>Close</button>
+                  ) : bookingPaymentModal.hasStkPush ? (
+                    <button className="mpesabtn" onClick={() => void refreshBookingPaymentStatus(true)} disabled={bookingPaymentLoading} aria-busy={bookingPaymentLoading}>
+                      {bookingPaymentLoading ? "Checking…" : "Check payment status"}
+                    </button>
+                  ) : (
+                    <button className="mpesabtn" onClick={() => void handleBookingPayment()} disabled={bookingPaymentLoading || !bookingPaymentPhone.trim()} aria-busy={bookingPaymentLoading}>
+                      {bookingPaymentLoading ? "Sending STK Push…" : bookingPaymentModal.status === "FAILED" ? "Try M-PESA again" : "Send STK Push"}
+                    </button>
+                  )}
+                  <p className="paynote">An STK payment prompt will be sent to this phone number. Approve it on your device; the server confirms payment from Daraja’s callback.</p>
+                </>
+              )}
+          </div>
+        </div>
+      )}
+
       {/* ─── CONFIRM MODAL ─── */}
       {confModal && (
         <div className="mov" onClick={e=>e.target===e.currentTarget&&setConfModal(null)}>
           <div className="mdl conf">
-            <div style={{fontSize:"2.3rem",marginBottom:"0.7rem"}}>{confModal.type==="ban"?"🚫":"🗑️"}</div>
+            <div style={{fontSize:"2.3rem",marginBottom:"0.7rem"}}>{confModal.type==="ban"?"🚫":confModal.type==="close-test"?"🧹":confModal.type==="completion"?"🏁":"🗑️"}</div>
             <h3 style={{fontFamily:"Cormorant Garamond,serif",fontSize:"1.4rem",fontWeight:700,marginBottom:"0.5rem"}}>{confModal.title}</h3>
             <p style={{fontSize:"0.81rem",color:"#777",lineHeight:1.6}}>{confModal.msg2}</p>
             <div className="confbtns">
               <button className="confcancel" onClick={()=>setConfModal(null)}>Cancel</button>
-              <button className={confModal.type==="ban"?"confban":"confdel"} onClick={confModal.onConfirm}>{confModal.type==="ban"?"Confirm":"Delete"}</button>
+              <button className={confModal.type==="ban"||confModal.type==="completion"?"confban":"confdel"} onClick={confModal.onConfirm}>{confModal.confirmLabel || (confModal.type==="ban"?"Confirm":confModal.type==="close-test"?"Close booking":confModal.type==="test-data"?"Mark as test":"Delete")}</button>
             </div>
           </div>
         </div>
