@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import Booking from '../models/Booking.js';
-import Payment from '../models/Payment.js';
 import Property from '../models/Property.js';
 import {
   approveProperty,
@@ -16,16 +15,12 @@ const originalPropertyFindById = Property.findById;
 const originalPropertyFindOneAndDelete = Property.findOneAndDelete;
 const originalPropertyFindOneAndUpdate = Property.findOneAndUpdate;
 const originalBookingExists = Booking.exists;
-const originalBookingDistinct = Booking.distinct;
-const originalPaymentExists = Payment.exists;
 
 test.afterEach(() => {
   Property.findById = originalPropertyFindById;
   Property.findOneAndDelete = originalPropertyFindOneAndDelete;
   Property.findOneAndUpdate = originalPropertyFindOneAndUpdate;
   Booking.exists = originalBookingExists;
-  Booking.distinct = originalBookingDistinct;
-  Payment.exists = originalPaymentExists;
 });
 
 test('normalizeId converts object-like ids to comparable strings', () => {
@@ -91,57 +86,44 @@ test('admin cannot mark a property available while an approved booking is active
     updatePropertyStatus('property-3', { id: 'admin-1', role: 'ADMIN' }, { status: 'AVAILABLE' }),
     error => {
       assert.equal(error.status, 409);
-      assert.match(error.message, /approved booking/);
+      assert.match(error.message, /active confirmed booking/);
       return true;
     }
   );
 });
 
-test('admin cannot mark a property available while a related payment is pending or successful', async () => {
+test('admin can mark a property available despite legacy booking-payment records', async () => {
   const property = {
     _id: 'property-4',
     status: 'OCCUPIED',
-    save: async () => {
-      throw new Error('A property with an unresolved payment must not be made available.');
-    },
   };
-  Property.findById = async () => property;
+  let findByIdCount = 0;
+  Property.findById = id => {
+    findByIdCount += 1;
+    if (findByIdCount === 1) return Promise.resolve(property);
+    return {
+      populate: () => ({
+        lean: async () => ({ id, status: property.status }),
+      }),
+    };
+  };
+  Property.findOneAndUpdate = async (_filter, update) => {
+    Object.assign(property, update.$set);
+    return property;
+  };
   Booking.exists = async () => null;
-  Booking.distinct = async () => ['booking-1'];
-  Payment.exists = async () => ({ _id: 'payment-1' });
 
-  await assert.rejects(
-    updatePropertyStatus('property-4', { id: 'admin-1', role: 'ADMIN' }, { status: 'AVAILABLE' }),
-    error => {
-      assert.equal(error.status, 409);
-      assert.match(error.message, /pending or successful payment/);
-      return true;
-    }
+  const result = await updatePropertyStatus(
+    'property-4',
+    { id: 'admin-1', role: 'ADMIN' },
+    { status: 'AVAILABLE' }
   );
+
+  assert.equal(property.status, 'AVAILABLE');
+  assert.equal(result.property.status, 'AVAILABLE');
 });
 
-test('admin cannot mark a property available while a non-completed booking records payment', async () => {
-  const property = {
-    _id: 'property-paid-booking',
-    status: 'OCCUPIED',
-    save: async () => {
-      throw new Error('A paid booking must keep the property unavailable.');
-    },
-  };
-  Property.findById = async () => property;
-  Booking.exists = async filter => (filter.$or ? { _id: 'paid-booking' } : null);
-
-  await assert.rejects(
-    updatePropertyStatus('property-paid-booking', { id: 'admin-1', role: 'ADMIN' }, { status: 'AVAILABLE' }),
-    error => {
-      assert.equal(error.status, 409);
-      assert.match(error.message, /paid booking/);
-      return true;
-    }
-  );
-});
-
-test('admin can make a property available after booking completion when no active payment remains', async () => {
+test('admin can make a property available after no active booking remains', async () => {
   let findByIdCount = 0;
   const property = {
     _id: 'property-7',
@@ -162,13 +144,6 @@ test('admin can make a property available after booking completion when no activ
     return property;
   };
   Booking.exists = async () => null;
-  Booking.distinct = async (_field, filter) => {
-    assert.deepEqual(filter, {
-      property: 'property-7',
-      status: { $ne: 'COMPLETED' },
-    });
-    return [];
-  };
 
   const result = await updatePropertyStatus(
     'property-7',
@@ -187,7 +162,6 @@ test('admin status update does not overwrite a concurrent booking approval', asy
   };
   Property.findById = async () => property;
   Booking.exists = async () => null;
-  Booking.distinct = async () => [];
   Property.findOneAndUpdate = async () => null;
 
   await assert.rejects(
@@ -197,6 +171,69 @@ test('admin status update does not overwrite a concurrent booking approval', asy
       assert.match(error.message, /changed while its status/);
       return true;
     }
+  );
+});
+
+test('landlord can update availability only for their own approved listing', async () => {
+  const property = {
+    _id: 'landlord-property',
+    owner: 'landlord-1',
+    status: 'OCCUPIED',
+    isApproved: true,
+  };
+  let findByIdCount = 0;
+  let updateFilter;
+  Property.findById = id => {
+    findByIdCount += 1;
+    if (findByIdCount === 1) return Promise.resolve(property);
+    return {
+      populate: () => ({
+        lean: async () => ({ id, status: property.status }),
+      }),
+    };
+  };
+  Property.findOneAndUpdate = async (filter, update) => {
+    updateFilter = filter;
+    Object.assign(property, update.$set);
+    return property;
+  };
+  Booking.exists = async () => null;
+
+  const result = await updatePropertyStatus(
+    property._id,
+    { id: 'landlord-1', role: 'LANDLORD' },
+    { status: 'AVAILABLE' }
+  );
+
+  assert.equal(result.property.status, 'AVAILABLE');
+  assert.equal(updateFilter.owner, 'landlord-1');
+  assert.equal(updateFilter.isApproved, true);
+});
+
+test('landlord cannot update another owner or set a non-availability status', async () => {
+  const property = {
+    _id: 'landlord-property',
+    owner: 'landlord-1',
+    status: 'AVAILABLE',
+    isApproved: true,
+  };
+  Property.findById = async () => property;
+
+  await assert.rejects(
+    updatePropertyStatus(
+      property._id,
+      { id: 'landlord-2', role: 'LANDLORD' },
+      { status: 'OCCUPIED' }
+    ),
+    error => error.status === 403
+  );
+  await assert.rejects(
+    updatePropertyStatus(
+      property._id,
+      { id: 'landlord-1', role: 'LANDLORD' },
+      { status: 'HIDDEN' }
+    ),
+    error => error.status === 409
   );
 });
 

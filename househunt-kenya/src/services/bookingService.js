@@ -54,6 +54,12 @@ export async function updateBookingCompletion(id, action) {
   return normalizeBooking(booking);
 }
 
+export async function resolveBookingAvailability(id) {
+  const response = await api.patch(`/api/bookings/${id}/admin-resolve`);
+  const booking = response.data?.data?.booking || response.data?.booking;
+  return normalizeBooking(booking);
+}
+
 export async function getLandlordBookings(params = {}) {
   const response = await api.get("/api/bookings/landlord", { params });
   return {

@@ -23,7 +23,7 @@ router.get('/:id', optionalAuth, propertyController.get);
 router.patch('/:id', requireAuth, propertyController.update);
 router.delete('/:id', requireAuth, propertyController.remove);
 router.patch('/:id/approve', requireAuth, authorize('ADMIN'), propertyController.approve);
-router.patch('/:id/status', requireAuth, authorize('ADMIN'), propertyController.updateStatus);
+router.patch('/:id/status', requireAuth, authorize('ADMIN', 'LANDLORD'), propertyController.updateStatus);
 router.patch('/:id/feature', requireAuth, authorize('ADMIN'), propertyController.feature);
 
 export default router;

@@ -53,7 +53,7 @@ export async function cancel(req, res) {
     await recordAuditEvent({
       actor: req.user,
       action: 'Booking cancelled',
-      description: 'Tenant cancelled an unpaid booking',
+      description: 'Tenant cancelled a pending booking request',
       resourceType: 'booking',
       resourceId: req.params.id,
     });
@@ -81,7 +81,7 @@ export async function updateCompletion(req, res) {
             ? 'Tenancy completion updated'
             : 'Tenancy completion requested',
       description: result.completed
-        ? 'Both parties confirmed tenancy completion; no refund was issued'
+        ? 'Both parties confirmed booking completion and the property was released when no active booking remained'
         : `Tenancy completion action recorded: ${action}`,
       resourceType: 'booking',
       resourceId: req.params.id,
@@ -94,6 +94,22 @@ export async function updateCompletion(req, res) {
       result,
       []
     );
+  } catch (err) {
+    return handleError(res, err);
+  }
+}
+
+export async function resolveAvailability(req, res) {
+  try {
+    const result = await bookingService.resolveBookingAvailability(req.params.id, req.user);
+    await recordAuditEvent({
+      actor: req.user,
+      action: 'Booking availability resolved',
+      description: 'Admin completed a disputed booking and released the property when no other active booking remained',
+      resourceType: 'booking',
+      resourceId: req.params.id,
+    });
+    return sendResponse(res, 200, true, 'Booking availability resolved successfully', result, []);
   } catch (err) {
     return handleError(res, err);
   }
@@ -114,7 +130,7 @@ export async function approve(req, res) {
     await recordAuditEvent({
       actor: req.user,
       action: 'Booking approved',
-      description: 'Landlord approved a booking request',
+      description: 'Landlord confirmed a rental arrangement and marked the property taken',
       resourceType: 'booking',
       resourceId: req.params.id,
     });
@@ -171,7 +187,7 @@ export async function closeTest(req, res) {
     await recordAuditEvent({
       actor: req.user,
       action: 'Test booking closed',
-      description: 'Admin closed an explicitly marked unpaid test booking',
+      description: 'Admin closed an explicitly marked test booking',
       resourceType: 'booking',
       resourceId: req.params.id,
     });

@@ -3,15 +3,11 @@ import assert from 'node:assert/strict';
 
 import * as paymentService from '../services/paymentService.js';
 import Payment from '../models/Payment.js';
-import Booking from '../models/Booking.js';
 import * as daraja from '../services/darajaService.js';
-import { mockBookingSettlement, mockDarajaVerification, mockPaymentSettlement } from './helpers/paymentSettlement.js';
+import { mockDarajaVerification, mockPaymentSettlement } from './helpers/paymentSettlement.js';
 
 const origPaymentFindOne = Payment.findOne;
 const origPaymentUpdateOne = Payment.updateOne;
-const origBookingFindById = Booking.findById;
-const origBookingUpdateOne = Booking.updateOne;
-const origBookingExists = Booking.exists;
 
 function makeCallback({ merchantRequestId = 'mr-1', checkoutRequestId = 'cr-1', resultCode = 0, items = [] } = {}) {
   return {
@@ -27,12 +23,10 @@ function makeCallback({ merchantRequestId = 'mr-1', checkoutRequestId = 'cr-1', 
   };
 }
 
-test('successful callback updates Payment and Booking', async () => {
+test('successful legacy callback updates only the historical payment record', async () => {
   const payment = { _id: 'p1', tenant: 't1', booking: 'b1', merchantRequestId: 'mr-1', checkoutRequestId: 'cr-1', status: 'PENDING', amount: 1000, currency: 'KES', phone: '254712345678' };
   Payment.findOne = async () => payment;
   mockPaymentSettlement(Payment, payment);
-  const booking = { _id: 'b1', status: 'APPROVED', amountPaid: 0, totalDue: 1000, paymentStatus: 'UNPAID' };
-  mockBookingSettlement(Booking, booking);
   mockDarajaVerification(daraja, { merchantRequestId: 'mr-1', checkoutRequestId: 'cr-1', resultCode: 0 });
 
   const items = [ { Name: 'Amount', Value: 1000 }, { Name: 'MpesaReceiptNumber', Value: 'MPESA123' }, { Name: 'PhoneNumber', Value: '254712345678' }, { Name: 'TransactionDate', Value: Date.now() } ];
@@ -42,7 +36,6 @@ test('successful callback updates Payment and Booking', async () => {
   assert.equal(res.success, true);
   assert.equal(payment.status, 'SUCCESS');
   assert.equal(payment.mpesaReceipt, 'MPESA123');
-  assert.equal(booking.paymentStatus, 'PAID');
 });
 
 test('callback cannot settle a payment when Daraja has not confirmed success', async () => {
@@ -74,8 +67,6 @@ test('amount mismatch does not mark payment success', async () => {
   const payment = { _id: 'p2', tenant: 't1', booking: 'b2', merchantRequestId: 'mr-2', checkoutRequestId: 'cr-2', status: 'PENDING', amount: 2000, currency: 'KES', phone: '254712345678', save: async function() { saved = this; } };
   let saved = null;
   Payment.findOne = async () => payment;
-  Booking.findById = async () => ({ _id: 'b2', status: 'APPROVED', paymentStatus: 'UNPAID', save: async function() { bkSaved = this; } });
-  let bkSaved = null;
 
   const items = [ { Name: 'Amount', Value: 1500 }, { Name: 'MpesaReceiptNumber', Value: 'MPESA999' }, { Name: 'PhoneNumber', Value: '254712345678' }, { Name: 'TransactionDate', Value: Date.now() } ];
   const cb = makeCallback({ merchantRequestId: 'mr-2', checkoutRequestId: 'cr-2', items });
@@ -84,15 +75,12 @@ test('amount mismatch does not mark payment success', async () => {
   assert.equal(res.success, true);
   assert.equal(payment.status, 'PENDING');
   assert.equal(saved, null);
-  assert.equal(bkSaved, null);
 });
 
 test('phone mismatch does not mark payment success', async () => {
   const payment = { _id: 'p3', tenant: 't1', booking: 'b3', merchantRequestId: 'mr-3', checkoutRequestId: 'cr-3', status: 'PENDING', amount: 1000, currency: 'KES', phone: '254700000000', save: async function() { saved = this; } };
   let saved = null;
   Payment.findOne = async () => payment;
-  Booking.findById = async () => ({ _id: 'b3', paymentStatus: 'UNPAID', save: async function() { bkSaved = this; } });
-  let bkSaved = null;
 
   const items = [ { Name: 'Amount', Value: 1000 }, { Name: 'MpesaReceiptNumber', Value: 'MPESA456' }, { Name: 'PhoneNumber', Value: '254712345678' }, { Name: 'TransactionDate', Value: Date.now() } ];
   const cb = makeCallback({ merchantRequestId: 'mr-3', checkoutRequestId: 'cr-3', items });
@@ -101,7 +89,6 @@ test('phone mismatch does not mark payment success', async () => {
   assert.equal(res.success, true);
   assert.equal(payment.status, 'PENDING');
   assert.equal(saved, null);
-  assert.equal(bkSaved, null);
 });
 
 test('unknown checkoutRequestId handled safely', async () => {
@@ -158,8 +145,6 @@ test('malformed callback body handled safely', async () => {
 test.after(() => {
   Payment.findOne = origPaymentFindOne;
   Payment.updateOne = origPaymentUpdateOne;
-  Booking.findById = origBookingFindById;
-  Booking.updateOne = origBookingUpdateOne;
-  Booking.exists = origBookingExists;
+
   daraja.__resetStkQuery();
 });

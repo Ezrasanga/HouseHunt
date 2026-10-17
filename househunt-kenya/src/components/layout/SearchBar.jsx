@@ -1,21 +1,21 @@
-import { FiHome, FiMapPin, FiSearch, FiSliders } from "react-icons/fi";
+import Icon from "../common/Icon";
 
 export default function SearchBar({ search, setSearch, budget, setBudget, ptype, setPtype, onSearch = () => {} }) {
   return (
     <div className="sbar">
       <label className="search-field search-location">
-        <FiMapPin aria-hidden="true" />
+        <Icon name="mapPin" />
         <input aria-label="Search by location or property name" placeholder="Search location or property name" value={search} onChange={e => setSearch(e.target.value)} />
       </label>
       <label className="search-field">
-        <FiHome aria-hidden="true" />
+        <Icon name="home" />
         <select aria-label="Property type" value={ptype} onChange={e => setPtype(e.target.value)}>
           <option value="">Property type</option>
           {['Bedsitter', 'Room', 'Apartment', 'House', 'Penthouse'].map(t => <option key={t}>{t}</option>)}
         </select>
       </label>
       <label className="search-field">
-        <FiSliders aria-hidden="true" />
+        <Icon name="sliders" />
         <select aria-label="Budget" value={budget} onChange={e => setBudget(e.target.value)}>
           <option value="">Any budget</option>
           <option value="low">Below KSh 15,000</option>
@@ -24,7 +24,7 @@ export default function SearchBar({ search, setSearch, budget, setBudget, ptype,
         </select>
       </label>
       <button className="search-submit" type="button" onClick={onSearch}>
-        <FiSearch aria-hidden="true" /> Search
+        <Icon name="search" /> Search
       </button>
     </div>
   );

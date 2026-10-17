@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import Icon from "../common/Icon";
 
 export default function Navbar({ tab, setTab, user, logout, setAuthModal, onChangePassword }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const navRef = useRef(null);
+  const navigate = useNavigate();
   const navigateTo = target => {
-    if (target === "landlord" || target === "tenant") {
-      if (!user) {
-        setAuthModal(target);
-      } else {
-        setTab(user.role === "admin" ? "admin" : user.role);
-      }
+    if (target === "tenant" && user?.role !== "tenant") {
+      setTab("home");
+    } else if (target === "landlord" && user?.role !== "landlord") {
+      navigate("/login", { state: { role: "landlord" } });
     } else {
       setTab(target);
     }
@@ -32,21 +33,24 @@ export default function Navbar({ tab, setTab, user, logout, setAuthModal, onChan
 
   return (
     <header className="hdr">
-      <div className="logo" onClick={() => navigateTo("home")} role="button" tabIndex={0} onKeyDown={event => event.key === "Enter" && navigateTo("home")}>House<em>Hunt</em> Kenya</div>
+      <button className="logo" type="button" aria-label="HouseHunt Kenya home" onClick={() => navigateTo("home")}>House<em>Hunt</em> Kenya</button>
       <button className="mobile-nav-toggle" type="button" aria-label={mobileOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileOpen} onClick={() => setMobileOpen(open => !open)}>☰</button>
       <nav ref={navRef} className={`hnav${mobileOpen ? " open" : ""}`} aria-label="Primary navigation">
-        {[["home", "🏠 Home"], ["tenant", "Find a Home"], ["landlord", "For Landlords"], ["guide", "How It Works"]].map(([t, l]) => (
+        {[["home", "Home"], ["tenant", "Find a Home"], ["landlord", "For Landlords"], ["guide", "How It Works"]].map(([t, l]) => (
           <button
             key={t}
+            type="button"
             className={`nb${tab === t ? " on" : ""}`}
+            aria-current={tab === t ? "page" : undefined}
             onClick={() => navigateTo(t)}
           >
+            {t === "home" && <Icon name="home" />}
             {l}
           </button>
         ))}
         {user?.role === "admin" && (
-          <button className={`nb adm${tab === "admin" ? " on" : ""}`} onClick={() => navigateTo("admin")}>
-            ⚙️ Admin
+          <button type="button" className={`nb adm${tab === "admin" ? " on" : ""}`} aria-current={tab === "admin" ? "page" : undefined} onClick={() => navigateTo("admin")}>
+            <Icon name="shield" /> Admin
           </button>
         )}
       </nav>
@@ -61,7 +65,7 @@ export default function Navbar({ tab, setTab, user, logout, setAuthModal, onChan
         ) : (
           <>
             <button className="admin-login-link" onClick={() => setAuthModal("admin")}>
-              🛡️ Admin
+              <Icon name="shield" /> Admin
             </button>
             <button className="bghost" style={{ fontSize: "0.74rem", padding: "5px 12px" }} onClick={() => setAuthModal("tenant")}>Tenant Login</button>
             <button className="bp" style={{ fontSize: "0.74rem", padding: "5px 12px" }} onClick={() => setAuthModal("landlord")}>Landlord Login</button>

@@ -1,266 +1,48 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import * as paymentService from '../services/paymentService.js';
-import Payment from '../models/Payment.js';
 import Booking from '../models/Booking.js';
+import Payment from '../models/Payment.js';
+import paymentRouter from '../routes/payments.js';
 
-const originalPaymentFindOne = Payment.findOne;
-const originalPaymentCreate = Payment.create;
-const originalPaymentDeleteOne = Payment.deleteOne;
-const originalPaymentFind = Payment.find;
-const originalPaymentCountDocuments = Payment.countDocuments;
-const originalBookingFindById = Booking.findById;
+function routeTable(router) {
+  return router.stack
+    .filter(layer => layer.route)
+    .map(layer => ({
+      path: layer.route.path,
+      methods: Object.keys(layer.route.methods),
+    }));
+}
 
-test('createPayment creates a pending payment for own approved booking', async () => {
-  const created = [];
-  const user = { id: 'tenant-1', role: 'TENANT' };
-  const booking = {
-    _id: '507f191e810c19729de860ea',
-    tenant: 'tenant-1',
-    landlord: 'landlord-1',
-    status: 'APPROVED',
-    paymentStatus: 'UNPAID',
-    property: { owner: 'landlord-1', price: 5000 },
-  };
+test('booking-payment and generic payment-management endpoints are not registered', () => {
+  const routes = routeTable(paymentRouter);
+  const unsupportedPaths = new Set([
+    '/',
+    '/booking/:bookingId',
+    '/:id',
+    '/:paymentId/stk-push',
+    '/:paymentId/stk-query',
+  ]);
 
-  Payment.findOne = async () => null;
-  Payment.create = async (payload) => {
-    created.push(payload);
-    return { ...payload, _id: 'payment-1' };
-  };
-  Booking.findById = () => ({
-    populate: () => ({
-      then: (resolve) => resolve(booking),
-      catch: () => {},
-    }),
-    then: (resolve) => resolve(booking),
-    catch: () => {},
-  });
-  const result = await paymentService.createPayment(user, {
-    bookingId: '507f191e810c19729de860ea',
-    currency: 'KES',
-    method: 'MPESA',
-    phone: '+254700000000',
-  });
-
-  assert.equal(result.status, 'PENDING');
-  assert.equal(created[0].booking, '507f191e810c19729de860ea');
-  assert.equal(created[0].tenant, 'tenant-1');
-  assert.equal(created[0].landlord, 'landlord-1');
-  assert.equal(created[0].amount, 5000);
-  assert.equal(created[0].currency, 'KES');
-  assert.equal(created[0].method, 'MPESA');
-  assert.equal(created[0].status, 'PENDING');
-  assert.equal(booking.paymentStatus, 'UNPAID');
+  assert.equal(routes.some(route => unsupportedPaths.has(route.path)), false);
 });
 
-test('createPayment rejects while tenancy completion is requested', async () => {
-  const booking = {
-    _id: '507f191e810c19729de860ea',
-    tenant: 'tenant-1',
-    landlord: 'landlord-1',
-    status: 'APPROVED',
-    completionRequestedBy: 'LANDLORD',
-    paymentStatus: 'UNPAID',
-    property: { owner: 'landlord-1', price: 5000 },
-  };
-  Booking.findById = () => ({
-    populate: () => ({
-      then: resolve => resolve(booking),
-      catch: () => {},
-    }),
-  });
+test('only property payments have payment creation, lookup, and STK endpoints', () => {
+  const routes = routeTable(paymentRouter);
+  const registered = new Set(routes.map(route => `${route.methods.join(',')}:${route.path}`));
 
-  await assert.rejects(async () => {
-    await paymentService.createPayment({ id: 'tenant-1', role: 'TENANT' }, {
-      bookingId: '507f191e810c19729de860ea',
-      currency: 'KES',
-      method: 'MPESA',
-    });
-  }, error => {
-    assert.equal(error.status, 409);
-    assert.match(error.message, /completion request is in progress/);
-    return true;
-  });
+  assert.ok(registered.has('post:/property'));
+  assert.ok(registered.has('get:/property/:propertyId'));
+  assert.ok(registered.has('get:/property-payments/:paymentId'));
+  assert.ok(registered.has('post:/property-payments/:paymentId/stk-push'));
+  assert.ok(registered.has('post:/property-payments/:paymentId/stk-query'));
+  assert.ok(registered.has('post:/mpesa/callback'));
 });
 
-test('createPayment removes a pending record if completion is requested concurrently', async () => {
-  const approvedBooking = {
-    _id: '507f191e810c19729de860ea',
-    tenant: 'tenant-1',
-    landlord: 'landlord-1',
-    status: 'APPROVED',
-    paymentStatus: 'UNPAID',
-    property: { owner: 'landlord-1', price: 5000 },
-  };
-  const updatedBooking = { ...approvedBooking, completionRequestedBy: 'LANDLORD' };
-  const createdPayment = { _id: 'payment-race', booking: approvedBooking._id, status: 'PENDING' };
-  let bookingReads = 0;
-  let deletedFilter;
-
-  Payment.findOne = async () => null;
-  Payment.create = async () => createdPayment;
-  Payment.deleteOne = async filter => {
-    deletedFilter = filter;
-    return { deletedCount: 1 };
-  };
-  Booking.findById = () => {
-    const booking = bookingReads++ === 0 ? approvedBooking : updatedBooking;
-    return {
-      populate: () => ({
-        then: resolve => resolve(booking),
-        catch: () => {},
-      }),
-      then: resolve => resolve(booking),
-      catch: () => {},
-    };
-  };
-
-  await assert.rejects(async () => {
-    await paymentService.createPayment({ id: 'tenant-1', role: 'TENANT' }, {
-      bookingId: approvedBooking._id,
-      currency: 'KES',
-      method: 'MPESA',
-    });
-  }, error => {
-    assert.equal(error.status, 409);
-    assert.match(error.message, /booking changed while payment was being created/);
-    return true;
-  });
-  assert.deepEqual(deletedFilter, { _id: createdPayment._id, status: 'PENDING' });
-});
-
-test('createPayment rejects an amount that differs from the booking balance', async () => {
-  const booking = {
-    _id: '507f191e810c19729de860ea',
-    tenant: 'tenant-1',
-    landlord: 'landlord-1',
-    status: 'APPROVED',
-    paymentStatus: 'UNPAID',
-    property: { owner: 'landlord-1', price: 5000 },
-  };
-  Booking.findById = () => ({
-    populate: () => ({
-      then: (resolve) => resolve(booking),
-      catch: () => {},
-    }),
-    then: (resolve) => resolve(booking),
-    catch: () => {},
-  });
-
-  await assert.rejects(async () => {
-    await paymentService.createPayment({ id: 'tenant-1', role: 'TENANT' }, {
-      bookingId: '507f191e810c19729de860ea',
-      amount: 1,
-      currency: 'KES',
-      method: 'MPESA',
-    });
-  }, (err) => {
-    assert.equal(err.status, 400);
-    assert.equal(err.message, 'Payment amount must match the amount due');
-    return true;
-  });
-});
-
-test('createPayment rejects when tenant does not own the booking', async () => {
-  const user = { id: 'tenant-1', role: 'TENANT' };
-  Booking.findById = () => ({
-    populate: () => ({
-      then: (resolve) => resolve({
-        _id: '507f191e810c19729de860ea',
-        tenant: 'tenant-2',
-        landlord: 'landlord-1',
-        status: 'APPROVED',
-        property: { owner: 'landlord-1' },
-      }),
-      catch: () => {},
-    }),
-    then: (resolve) => resolve({
-      _id: '507f191e810c19729de860ea',
-      tenant: 'tenant-2',
-      landlord: 'landlord-1',
-      status: 'APPROVED',
-      property: { owner: 'landlord-1' },
-    }),
-    catch: () => {},
-  });
-
-  await assert.rejects(async () => {
-    await paymentService.createPayment(user, {
-      bookingId: '507f191e810c19729de860ea',
-      amount: 2500,
-      currency: 'KES',
-      method: 'MPESA',
-    });
-  }, (err) => {
-    assert.equal(err.status, 403);
-    assert.equal(err.message, 'You may only pay for your own booking');
-    return true;
-  });
-});
-
-test('listPayments allows landlord to view payments for their own properties', async () => {
-  const user = { id: 'landlord-1', role: 'LANDLORD' };
-  const found = [{ _id: 'payment-1', booking: 'booking-1', tenant: 'tenant-1', landlord: 'landlord-1', amount: 5000, currency: 'KES', method: 'MPESA', status: 'PENDING', phone: '+254700000000', createdAt: new Date(), updatedAt: new Date() }];
-  Payment.find = () => ({ sort: () => ({ skip: () => ({ limit: () => ({ lean: async () => found }) }) }) });
-  Payment.countDocuments = async () => 1;
-
-  const result = await paymentService.listPayments(user, {});
-
-  assert.equal(result.payments.length, 1);
-  assert.equal(result.payments[0].landlord, 'landlord-1');
-  assert.equal(result.pagination.total, 1);
-});
-
-test('listPayments allows admin to view all payments', async () => {
-  const user = { id: 'admin-1', role: 'ADMIN' };
-  const found = [{ _id: 'payment-1', booking: 'booking-1', tenant: 'tenant-1', landlord: 'landlord-1', amount: 5000, currency: 'KES', method: 'MPESA', status: 'SUCCESS', phone: '+254700000000', createdAt: new Date(), updatedAt: new Date() }];
-  Payment.find = () => ({ sort: () => ({ skip: () => ({ limit: () => ({ lean: async () => found }) }) }) });
-  Payment.countDocuments = async () => 1;
-
-  const result = await paymentService.listPayments(user, { status: 'SUCCESS' });
-
-  assert.equal(result.payments.length, 1);
-  assert.equal(result.payments[0].status, 'SUCCESS');
-  assert.equal(result.pagination.total, 1);
-});
-
-test('createPayment rejects unauthenticated access', async () => {
-  await assert.rejects(async () => {
-    await paymentService.createPayment(null, {
-      bookingId: 'booking-1',
-      amount: 1000,
-      currency: 'KES',
-      method: 'MPESA',
-    });
-  }, (err) => {
-    assert.equal(err.status, 401);
-    assert.equal(err.message, 'Authentication required');
-    return true;
-  });
-});
-
-test('createPayment rejects non-numeric amounts', async () => {
-  await assert.rejects(async () => {
-    await paymentService.createPayment({ id: 'tenant-1', role: 'TENANT' }, {
-      bookingId: '507f191e810c19729de860ea',
-      amount: 'not-a-number',
-      currency: 'KES',
-      method: 'MPESA',
-    });
-  }, (err) => {
-    assert.equal(err.status, 400);
-    assert.equal(err.message, 'Validation failed');
-    return true;
-  });
-});
-
-test.after(async () => {
-  Payment.findOne = originalPaymentFindOne;
-  Payment.create = originalPaymentCreate;
-  Payment.deleteOne = originalPaymentDeleteOne;
-  Payment.find = originalPaymentFind;
-  Payment.countDocuments = originalPaymentCountDocuments;
-    Booking.findById = originalBookingFindById;
+test('booking payment fields and purpose are no longer part of payment schemas', () => {
+  assert.equal(Payment.schema.path('booking'), undefined);
+  assert.deepEqual(Payment.schema.path('purpose').enumValues, ['CONTACT_UNLOCK', 'LISTING_BOOST']);
+  for (const field of ['monthlyRent', 'totalDue', 'amountPaid', 'settledPaymentIds', 'currency', 'paymentStatus']) {
+    assert.equal(Booking.schema.path(field), undefined);
+  }
 });

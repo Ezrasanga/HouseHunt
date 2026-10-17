@@ -1,7 +1,7 @@
 import Property from '../models/Property.js';
 import Booking from '../models/Booking.js';
-import Payment from '../models/Payment.js';
 import User from '../models/User.js';
+import PropertyUnlock from '../models/PropertyUnlock.js';
 
 export function normalizeId(value) {
   if (!value) return null;
@@ -17,22 +17,34 @@ export function normalizeId(value) {
   return null;
 }
 
-function sanitizeUser(user) {
+function sanitizeUser(user, includeContact = false) {
   if (!user) return null;
-  return {
+  const result = {
     id: normalizeId(user.id || user._id),
     firstName: user.firstName,
     lastName: user.lastName,
     profileImage: user.profileImage || '',
   };
+  if (includeContact) {
+    result.phone = user.phone || '';
+    result.email = user.email || '';
+  }
+  return result;
 }
 
-function sanitizeProperty(property) {
+function sanitizeProperty(property, { revealContacts = false } = {}) {
   if (!property) return null;
   const plain = property.toObject ? property.toObject() : property;
+  const location = plain.location ? { ...plain.location } : plain.location;
+  if (location && !revealContacts) delete location.street;
   return {
     ...plain,
-    owner: plain.owner && typeof plain.owner === 'object' ? sanitizeUser(plain.owner) : plain.owner,
+    location,
+    owner: plain.owner && typeof plain.owner === 'object' ? sanitizeUser(plain.owner, revealContacts) : plain.owner,
+    contact: revealContacts && plain.owner && typeof plain.owner === 'object'
+      ? { phone: plain.owner.phone || '', email: plain.owner.email || '' }
+      : null,
+    unlocked: revealContacts,
   };
 }
 
@@ -69,37 +81,7 @@ async function assertPropertyCanBeMadeAvailable(propertyId) {
   });
   if (activeBooking) {
     throw createPropertyLifecycleError(
-      'This property has an approved booking and cannot be marked available until that booking is completed or cancelled.'
-    );
-  }
-
-  const paidBooking = await Booking.exists({
-    property: propertyId,
-    status: { $ne: 'COMPLETED' },
-    $or: [
-      { paymentStatus: { $in: ['PAID', 'PARTIAL'] } },
-      { amountPaid: { $gt: 0 } },
-    ],
-  });
-  if (paidBooking) {
-    throw createPropertyLifecycleError(
-      'This property has a paid booking and cannot be marked available until that booking is completed.'
-    );
-  }
-
-  const bookingIds = await Booking.distinct('_id', {
-    property: propertyId,
-    status: { $ne: 'COMPLETED' },
-  });
-  if (!bookingIds.length) return;
-
-  const unresolvedPayment = await Payment.exists({
-    booking: { $in: bookingIds },
-    status: { $in: ['PENDING', 'SUCCESS'] },
-  });
-  if (unresolvedPayment) {
-    throw createPropertyLifecycleError(
-      'This property has a pending or successful payment and cannot be marked available until its booking is resolved.'
+      'This property has an active confirmed booking. Complete or cancel that booking before marking it available.'
     );
   }
 }
@@ -161,6 +143,12 @@ export async function listProperties(query = {}, viewer = null) {
 
   const isAdmin = viewer?.role === 'ADMIN';
   const isLandlord = viewer?.role === 'LANDLORD';
+  if (!isAdmin && !isLandlord) {
+    await Property.updateMany(
+      { featured: true, featuredUntil: { $ne: null, $lte: new Date() } },
+      { $set: { featured: false, featuredUntil: null, featuredPayment: null } }
+    );
+  }
   const filter = isAdmin || isLandlord
     ? {}
     : buildPublicFilter(query);
@@ -210,7 +198,7 @@ export async function getProperty(id, viewer = null) {
     throw error;
   }
 
-  const property = await Property.findById(id).populate('owner', 'firstName lastName profileImage').lean();
+  const property = await Property.findById(id).populate('owner', 'firstName lastName profileImage phone email').lean();
   if (!property) {
     const error = new Error('Property not found');
     error.status = 404;
@@ -221,6 +209,10 @@ export async function getProperty(id, viewer = null) {
   const viewerId = normalizeId(viewer?.id);
   const isOwner = Boolean(viewerId && ownerId && ownerId === viewerId);
   const isAdmin = viewer?.role === 'ADMIN';
+  const hasUnlock = viewer?.role === 'TENANT' && await PropertyUnlock.exists({
+    tenant: viewer.id,
+    property: property._id,
+  });
   const canView = isAdmin || isOwner || (property.isApproved && property.status !== 'HIDDEN');
 
   if (!canView) {
@@ -233,7 +225,8 @@ export async function getProperty(id, viewer = null) {
     await Property.findByIdAndUpdate(id, { $inc: { views: 1 } });
   }
 
-  return { property: sanitizeProperty(property) };
+  const revealContacts = isAdmin || isOwner || Boolean(hasUnlock);
+  return { property: sanitizeProperty(property, { revealContacts }) };
 }
 
 export async function createProperty(actor, payload = {}) {
@@ -493,8 +486,8 @@ export async function updatePropertyStatus(id, actor, payload = {}) {
     throw error;
   }
 
-  if (actor.role !== 'ADMIN') {
-    const error = new Error('Only admins can change property status');
+  if (!['ADMIN', 'LANDLORD'].includes(actor.role)) {
+    const error = new Error('Only landlords and admins can change property status');
     error.status = 403;
     throw error;
   }
@@ -506,6 +499,13 @@ export async function updatePropertyStatus(id, actor, payload = {}) {
     throw error;
   }
 
+  const isOwner = normalizeId(property.owner) === normalizeId(actor.id);
+  if (actor.role === 'LANDLORD' && !isOwner) {
+    const error = new Error('You may only change availability for your own properties');
+    error.status = 403;
+    throw error;
+  }
+
   const validStatuses = ['AVAILABLE', 'OCCUPIED', 'PENDING', 'HIDDEN'];
   const newStatus = String(payload?.status || '').toUpperCase();
   if (!validStatuses.includes(newStatus)) {
@@ -514,12 +514,21 @@ export async function updatePropertyStatus(id, actor, payload = {}) {
     throw error;
   }
 
+  if (actor.role === 'LANDLORD' && (!property.isApproved || !['AVAILABLE', 'OCCUPIED'].includes(newStatus))) {
+    throw createPropertyLifecycleError('Landlords can change availability only for approved listings.');
+  }
+
   if (newStatus === 'AVAILABLE') {
     await assertPropertyCanBeMadeAvailable(property._id);
   }
 
+  const filter = {
+    _id: property._id,
+    status: property.status,
+    ...(actor.role === 'LANDLORD' ? { owner: actor.id, isApproved: true } : {}),
+  };
   const updatedProperty = await Property.findOneAndUpdate(
-    { _id: property._id, status: property.status },
+    filter,
     { $set: { status: newStatus } },
     { new: true, runValidators: true }
   );

@@ -2,22 +2,43 @@ import mongoose from 'mongoose';
 
 const paymentSchema = new mongoose.Schema(
   {
-    booking: {
+    property: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Booking',
-      required: [true, 'Booking reference is required'],
+      ref: 'Property',
+      required: function requiredForPropertyPayment() {
+        return this.purpose === 'CONTACT_UNLOCK' || this.purpose === 'LISTING_BOOST';
+      },
+      default: null,
+      index: true,
+    },
+    purpose: {
+      type: String,
+      enum: ['CONTACT_UNLOCK', 'LISTING_BOOST'],
+      required: true,
+      index: true,
+    },
+    payer: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
       index: true,
     },
     tenant: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: [true, 'Tenant is required'],
+      required: function requiredForContactUnlock() {
+        return this.purpose === 'CONTACT_UNLOCK';
+      },
+      default: null,
       index: true,
     },
     landlord: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: [true, 'Landlord is required'],
+      required: function requiredForPropertyPayment() {
+        return this.purpose === 'CONTACT_UNLOCK' || this.purpose === 'LISTING_BOOST';
+      },
+      default: null,
       index: true,
     },
     amount: {
@@ -93,7 +114,7 @@ const paymentSchema = new mongoose.Schema(
   }
 );
 
-paymentSchema.index({ booking: 1 });
 paymentSchema.index({ tenant: 1, landlord: 1 });
+paymentSchema.index({ property: 1, purpose: 1, status: 1 });
 
 export default mongoose.model('Payment', paymentSchema);

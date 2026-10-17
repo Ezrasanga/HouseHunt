@@ -1,6 +1,5 @@
 import mongoose from 'mongoose';
 import Booking from '../models/Booking.js';
-import Payment from '../models/Payment.js';
 import Property from '../models/Property.js';
 
 function normalizeId(value) {
@@ -134,65 +133,16 @@ async function releasePropertyIfNoApprovedBookings(propertyId) {
   const activeApprovedBooking = await Booking.findOne({ property: propertyId, status: 'APPROVED' });
   if (activeApprovedBooking) return;
 
-  const activeBookingIds = await Booking.distinct('_id', {
-    property: propertyId,
-    status: { $in: ['PENDING', 'APPROVED'] },
-  });
-  if (activeBookingIds.length && await Payment.findOne({
-    booking: { $in: activeBookingIds },
-    status: 'PENDING',
-  })) {
-    return;
-  }
-
   await Property.updateOne(
     { _id: propertyId, status: 'OCCUPIED' },
     { $set: { status: 'AVAILABLE' } }
   );
 }
 
-async function hasUnresolvedPayment(bookingId) {
-  return Boolean(await Payment.findOne({
-    booking: bookingId,
-    status: { $in: ['PENDING', 'SUCCESS'] },
-  }));
-}
-
-async function hasPendingPayment(bookingId) {
-  return Boolean(await Payment.findOne({
-    booking: bookingId,
-    status: 'PENDING',
-  }));
-}
-
 function completionError(message) {
   const error = new Error(message);
   error.status = 409;
   return error;
-}
-
-async function serializeBookingsWithPaymentState(bookings, includeTestData = false) {
-  if (!bookings.length) return [];
-  const bookingIds = bookings.map(booking => booking._id || booking.id);
-  const payments = await Payment.find({ booking: { $in: bookingIds } })
-    .select('booking status checkoutRequestId merchantRequestId createdAt')
-    .sort({ createdAt: -1 })
-    .lean();
-  const latestStatusByBooking = new Map();
-  for (const payment of payments) {
-    const bookingId = normalizeId(payment.booking);
-    if (bookingId && !latestStatusByBooking.has(bookingId)) {
-      const hasStkPush = Boolean(payment.checkoutRequestId || payment.merchantRequestId);
-      latestStatusByBooking.set(
-        bookingId,
-        payment.status === 'PENDING' && !hasStkPush ? 'INITIALIZED' : payment.status
-      );
-    }
-  }
-  return bookings.map(booking => serializeBooking({
-    ...booking,
-    paymentAttemptStatus: latestStatusByBooking.get(normalizeId(booking._id || booking.id)) || null,
-  }, includeTestData));
 }
 
 export async function createBooking(actor, payload = {}) {
@@ -262,7 +212,6 @@ export async function createBooking(actor, payload = {}) {
     leaseMonths: Number(payload.leaseMonths),
     notes: typeof payload.notes === 'string' ? payload.notes.trim() : '',
     status: 'PENDING',
-    paymentStatus: 'UNPAID',
   });
 
   return { booking: serializeBooking(booking) };
@@ -294,16 +243,6 @@ export async function listTenantBookings(actor, query = {}) {
     filter.status = normalizedStatus;
   }
 
-  if (query.paymentStatus) {
-    const normalizedPaymentStatus = String(query.paymentStatus).toUpperCase();
-    if (!['UNPAID', 'PARTIAL', 'PAID'].includes(normalizedPaymentStatus)) {
-      const error = new Error('Invalid payment status');
-      error.status = 400;
-      throw error;
-    }
-    filter.paymentStatus = normalizedPaymentStatus;
-  }
-
   const [bookings, total] = await Promise.all([
     Booking.find(filter)
       .sort('-createdAt')
@@ -316,7 +255,7 @@ export async function listTenantBookings(actor, query = {}) {
   ]);
 
   return {
-    bookings: await serializeBookingsWithPaymentState(bookings),
+    bookings: bookings.map(booking => serializeBooking(booking)),
     pagination: buildPagination(page, limit, total),
   };
 }
@@ -387,31 +326,16 @@ export async function cancelBooking(id, actor) {
     throw error;
   }
 
-  if (!['PENDING', 'APPROVED'].includes(booking.status)) {
+  if (booking.status !== 'PENDING') {
     const error = new Error('This booking cannot be cancelled in its current state');
     error.status = 400;
     throw error;
   }
 
-  if (booking.paymentStatus !== 'UNPAID' || Number(booking.amountPaid || 0) > 0) {
-    const error = new Error('This booking has a payment and cannot be cancelled here. Contact an administrator for help; cancellation does not issue a refund.');
-    error.status = 409;
-    throw error;
-  }
-
-  if (booking.status === 'APPROVED' && await hasUnresolvedPayment(booking._id)) {
-    const error = new Error('A payment is pending or has already succeeded. Wait for its final status before cancelling.');
-    error.status = 409;
-    throw error;
-  }
-
-  const wasApproved = booking.status === 'APPROVED';
   const cancelledBooking = await Booking.findOneAndUpdate(
     {
       _id: booking._id,
       status: booking.status,
-      paymentStatus: 'UNPAID',
-      amountPaid: { $in: [0, null] },
     },
     { $set: { status: 'CANCELLED' } },
     { new: true }
@@ -420,10 +344,6 @@ export async function cancelBooking(id, actor) {
     const error = new Error('The booking changed while cancellation was in progress. Refresh and try again.');
     error.status = 409;
     throw error;
-  }
-
-  if (wasApproved) {
-    await releasePropertyIfNoApprovedBookings(booking.property);
   }
 
   return { booking: serializeBooking(cancelledBooking) };
@@ -471,10 +391,6 @@ export async function updateBookingCompletion(id, actor, action = 'REQUEST') {
       return { booking: serializeBooking(booking), completed: true };
     }
     throw completionError('Only an approved booking can be marked for completion.');
-  }
-
-  if (await hasPendingPayment(booking._id)) {
-    throw completionError('This booking has a pending payment. Wait for its final status before completing the tenancy.');
   }
 
   const requesterRole = booking.completionRequestedBy || null;
@@ -554,6 +470,43 @@ export async function updateBookingCompletion(id, actor, action = 'REQUEST') {
   return { booking: serializeBooking(completedBooking), completed: true };
 }
 
+export async function resolveBookingAvailability(id, actor) {
+  if (!actor?.id || actor.role !== 'ADMIN') {
+    const error = new Error('Only admins can resolve disputed booking availability');
+    error.status = actor?.id ? 403 : 401;
+    throw error;
+  }
+
+  const booking = await Booking.findById(id);
+  if (!booking) {
+    const error = new Error('Booking not found');
+    error.status = 404;
+    throw error;
+  }
+  if (booking.status !== 'APPROVED') {
+    throw completionError('Only an active confirmed booking can be resolved.');
+  }
+
+  const resolvedBooking = await Booking.findOneAndUpdate(
+    { _id: booking._id, status: 'APPROVED' },
+    {
+      $set: {
+        status: 'COMPLETED',
+        completedAt: new Date(),
+        completionRequestedBy: null,
+        completionRequestedAt: null,
+      },
+    },
+    { new: true }
+  );
+  if (!resolvedBooking) {
+    throw completionError('The booking changed while availability was being resolved. Refresh and try again.');
+  }
+
+  await releasePropertyIfNoApprovedBookings(booking.property);
+  return { booking: serializeBooking(resolvedBooking), completed: true };
+}
+
 export async function listLandlordBookings(actor, query = {}) {
   if (!actor?.id) {
     const error = new Error('Authentication required');
@@ -581,16 +534,6 @@ export async function listLandlordBookings(actor, query = {}) {
     filter.status = normalizedStatus;
   }
 
-  if (query.paymentStatus) {
-    const normalizedPaymentStatus = String(query.paymentStatus).toUpperCase();
-    if (!['UNPAID', 'PARTIAL', 'PAID'].includes(normalizedPaymentStatus)) {
-      const error = new Error('Invalid payment status');
-      error.status = 400;
-      throw error;
-    }
-    filter.paymentStatus = normalizedPaymentStatus;
-  }
-
   const [bookings, total] = await Promise.all([
     Booking.find(filter)
       .sort('-createdAt')
@@ -604,7 +547,7 @@ export async function listLandlordBookings(actor, query = {}) {
   ]);
 
   return {
-    bookings: await serializeBookingsWithPaymentState(bookings),
+    bookings: bookings.map(booking => serializeBooking(booking)),
     pagination: buildPagination(page, limit, total),
   };
 }
@@ -644,12 +587,6 @@ export async function approveBooking(id, actor) {
 
   if (booking.status !== 'PENDING') {
     const error = new Error('Booking is not pending and cannot be approved');
-    error.status = 400;
-    throw error;
-  }
-
-  if (!Number.isFinite(Number(property.price)) || Number(property.price) <= 0) {
-    const error = new Error('Property has invalid rental pricing');
     error.status = 400;
     throw error;
   }
@@ -695,10 +632,6 @@ export async function approveBooking(id, actor) {
       {
         $set: {
           status: 'APPROVED',
-          monthlyRent: Number(property.price),
-          totalDue: Number(property.price),
-          amountPaid: 0,
-          currency: 'KES',
         },
       },
       { new: true }
@@ -789,16 +722,6 @@ export async function listAdminBookings(actor, query = {}) {
     filter.status = normalizedStatus;
   }
 
-  if (query.paymentStatus) {
-    const normalizedPaymentStatus = String(query.paymentStatus).toUpperCase();
-    if (!['UNPAID', 'PARTIAL', 'PAID'].includes(normalizedPaymentStatus)) {
-      const error = new Error('Invalid payment status');
-      error.status = 400;
-      throw error;
-    }
-    filter.paymentStatus = normalizedPaymentStatus;
-  }
-
   if (query.property) {
     if (!mongoose.Types.ObjectId.isValid(String(query.property))) {
       const error = new Error('Invalid property ID');
@@ -848,7 +771,7 @@ export async function listAdminBookings(actor, query = {}) {
   ]);
 
   return {
-    bookings: await serializeBookingsWithPaymentState(bookings, true),
+    bookings: bookings.map(booking => serializeBooking(booking, true)),
     pagination: buildPagination(page, limit, total),
   };
 }
@@ -867,11 +790,6 @@ export async function markBookingAsTestData(id, actor) {
     throw error;
   }
 
-  if (booking.paymentStatus !== 'UNPAID' || Number(booking.amountPaid || 0) > 0 || await hasUnresolvedPayment(booking._id)) {
-    const error = new Error('Bookings with paid or pending payments cannot be marked as test data.');
-    error.status = 409;
-    throw error;
-  }
   if (!['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'].includes(booking.status)) {
     const error = new Error('Only non-completed bookings can be marked as test data.');
     error.status = 409;
@@ -879,7 +797,7 @@ export async function markBookingAsTestData(id, actor) {
   }
 
   const updatedBooking = await Booking.findOneAndUpdate(
-    { _id: booking._id, paymentStatus: 'UNPAID', amountPaid: { $in: [0, null] } },
+    { _id: booking._id, status: booking.status },
     {
       $set: {
         isTestData: true,
@@ -915,8 +833,8 @@ export async function closeTestBooking(id, actor) {
     error.status = 409;
     throw error;
   }
-  if (booking.status === 'COMPLETED' || booking.paymentStatus !== 'UNPAID' || Number(booking.amountPaid || 0) > 0 || await hasUnresolvedPayment(booking._id)) {
-    const error = new Error('This test booking cannot be closed because it is completed or has a paid or pending payment.');
+  if (booking.status === 'COMPLETED') {
+    const error = new Error('A completed booking cannot be closed.');
     error.status = 409;
     throw error;
   }
@@ -932,8 +850,6 @@ export async function closeTestBooking(id, actor) {
       _id: booking._id,
       isTestData: true,
       status: booking.status,
-      paymentStatus: 'UNPAID',
-      amountPaid: { $in: [0, null] },
     },
     { $set: { status: 'CANCELLED' } },
     { new: true }

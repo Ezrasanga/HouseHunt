@@ -1,11 +1,13 @@
 import mongoose from 'mongoose';
+import process from 'node:process';
 import Payment from '../models/Payment.js';
-import Booking from '../models/Booking.js';
+import Property from '../models/Property.js';
+import PropertyUnlock from '../models/PropertyUnlock.js';
 import * as daraja from './darajaService.js';
 
 /**
- * Handle Daraja STK Push callback payload and reconcile payment/booking.
- * This function is idempotent and treats the provider callback as authoritative.
+ * Handle Daraja STK Push callbacks and reconcile payment benefits.
+ * This function is idempotent and verifies callback results against Daraja.
  */
 export async function handleMpesaCallback(payload = {}) {
   // Safely navigate into structure
@@ -25,13 +27,7 @@ export async function handleMpesaCallback(payload = {}) {
   }
 
   // Find payment by checkoutRequestId
-  const maybeQuery = Payment.findOne({ checkoutRequestId });
-  let payment;
-  if (maybeQuery && typeof maybeQuery.populate === 'function') {
-    payment = await maybeQuery.populate('booking');
-  } else {
-    payment = await maybeQuery;
-  }
+  const payment = await Payment.findOne({ checkoutRequestId });
   if (!payment) {
     // Do not create records; log safe info and return success to stop retries
     // Avoid logging sensitive callback contents
@@ -122,9 +118,12 @@ export async function handleMpesaCallback(payload = {}) {
     return { success: true, message: 'Transaction failed' };
   }
 
-  const bookingPaid = await ensureBookingPaid(payment);
-  if (!bookingPaid) {
-    return { success: true, message: 'Booking reconciliation pending' };
+  const paymentGranted = await grantPaymentBenefit(payment);
+  if (!paymentGranted) {
+    return {
+      success: true,
+      message: 'Payment reconciliation pending',
+    };
   }
 
   const update = {
@@ -184,70 +183,65 @@ function isAmountEqual(a, b) {
   return Math.abs(amountA - amountB) < 0.001;
 }
 
-async function ensureBookingPaid(payment) {
-  try {
-    const bookingId = payment.booking?._id || payment.booking;
-    if (!bookingId || !payment._id || !Number.isFinite(Number(payment.amount)) || Number(payment.amount) <= 0) return false;
+async function grantPaymentBenefit(payment) {
+  const purpose = payment.purpose || 'BOOKING';
+  // Historical booking payments keep their transaction record without changing bookings.
+  if (purpose === 'BOOKING') return true;
 
-    const result = await Booking.updateOne(
-      { _id: bookingId, status: 'APPROVED', settledPaymentIds: { $ne: payment._id } },
-      {
-        $inc: { amountPaid: Number(payment.amount) },
-        $addToSet: { settledPaymentIds: payment._id },
+  if (purpose === 'CONTACT_UNLOCK') {
+    try {
+      await PropertyUnlock.findOneAndUpdate(
+        { tenant: payment.tenant, property: payment.property },
+        { $setOnInsert: { tenant: payment.tenant, property: payment.property, payment: payment._id } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+      return true;
+    } catch (error) {
+      if (error?.code === 11000) {
+        return Boolean(await PropertyUnlock.exists({ tenant: payment.tenant, property: payment.property }));
       }
-    );
-    if (result.modifiedCount === 0) {
-      const alreadySettled = await Booking.exists({
-        _id: bookingId,
-        settledPaymentIds: payment._id,
-      });
-      if (!alreadySettled) return false;
+      throw error;
     }
-
-    const statusResult = await Booking.updateOne(
-      { _id: bookingId, status: 'APPROVED' },
-      [{
-        $set: {
-          paymentStatus: {
-            $cond: [
-              {
-                $and: [
-                  { $gt: [{ $ifNull: ['$totalDue', 0] }, 0] },
-                  { $lt: ['$amountPaid', '$totalDue'] },
-                ],
-              },
-              'PARTIAL',
-              'PAID',
-            ],
-          },
-        },
-      }]
-    );
-    return result.modifiedCount > 0 || statusResult.matchedCount > 0;
-  } catch (e) {
-    console.warn('MPESA callback: failed to ensure booking PAID', e && e.message);
-    throw e;
   }
+
+  if (purpose === 'LISTING_BOOST') {
+    const featuredUntil = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const result = await Property.updateOne(
+      {
+        _id: payment.property,
+        owner: payment.landlord,
+        isApproved: true,
+        status: 'AVAILABLE',
+        featuredPayment: { $ne: payment._id },
+      },
+      { $set: { featured: true, featuredUntil, featuredPayment: payment._id } }
+    );
+    if (result.modifiedCount > 0) return true;
+
+    const property = await Property.findOne({ _id: payment.property, featuredPayment: payment._id });
+    return Boolean(property);
+  }
+
+  console.error('Payment has unsupported purpose during settlement', purpose);
+  return false;
 }
 
-function parsePagination(query = {}) {
-  const page = Number.parseInt(String(query.page || '1'), 10);
-  const limit = Number.parseInt(String(query.limit || '10'), 10);
-  return {
-    page: Number.isFinite(page) && page > 0 ? page : 1,
-    limit: Number.isFinite(limit) && limit > 0 ? Math.min(100, limit) : 10,
-  };
+function configuredFee(environmentKey, defaultAmount) {
+  const configured = process.env[environmentKey];
+  if (configured === undefined || configured === '') return defaultAmount;
+  const amount = Number(configured);
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    const error = new Error(`${environmentKey} must be a positive whole number of KES`);
+    error.status = 500;
+    throw error;
+  }
+  return amount;
 }
 
-function buildPagination(page, limit, total) {
-  const totalPages = Math.max(1, Math.ceil(total / limit));
+export function getPropertyPaymentFees() {
   return {
-    page,
-    limit,
-    total,
-    totalPages,
-    hasNextPage: page < totalPages,
-    hasPrevPage: page > 1,
+    unlockFee: configuredFee('PROPERTY_UNLOCK_FEE_KES', 100),
+    boostFee: configuredFee('PROPERTY_BOOST_FEE_KES', 200),
   };
 }
 
@@ -256,7 +250,9 @@ function sanitizePayment(payment) {
   const plain = payment.toObject ? payment.toObject() : payment;
   return {
     id: normalizeId(plain.id || plain._id),
-    booking: plain.booking,
+    property: normalizeId(plain.property),
+    purpose: plain.purpose,
+    payer: normalizeId(plain.payer || plain.tenant),
     tenant: plain.tenant,
     landlord: plain.landlord,
     amount: plain.amount,
@@ -270,147 +266,148 @@ function sanitizePayment(payment) {
   };
 }
 
-function validateCreatePayload(payload = {}) {
-  const errors = [];
-  const amount = payload.amount;
-  const currency = payload.currency;
-  const method = payload.method;
-  const bookingId = payload.bookingId;
-  const phone = payload.phone;
-
-  if (!bookingId) {
-    errors.push({ field: 'bookingId', message: 'Booking ID is required' });
-  } else if (!mongoose.Types.ObjectId.isValid(String(bookingId))) {
-    errors.push({ field: 'bookingId', message: 'Booking ID is invalid' });
-  }
-
-  if (amount !== undefined && amount !== null && amount !== '' && (!Number.isFinite(Number(amount)) || Number(amount) <= 0)) {
-    errors.push({ field: 'amount', message: 'Amount must be a positive number' });
-  }
-
-  if (!currency) {
-    errors.push({ field: 'currency', message: 'Currency is required' });
-  } else if (!['KES', 'USD', 'EUR'].includes(String(currency).toUpperCase())) {
-    errors.push({ field: 'currency', message: 'Currency must be one of KES, USD, EUR' });
-  }
-
-  if (!method) {
-    errors.push({ field: 'method', message: 'Payment method is required' });
-  } else if (!['MPESA', 'CARD', 'BANK'].includes(String(method).toUpperCase())) {
-    errors.push({ field: 'method', message: 'Payment method must be MPESA, CARD, or BANK' });
-  }
-
-  if (phone && typeof phone !== 'string') {
-    errors.push({ field: 'phone', message: 'Phone must be a string' });
-  }
-
-  return { success: errors.length === 0, errors };
-}
-
-export async function createPayment(user, payload = {}) {
+export async function createPropertyPayment(user, payload = {}) {
   if (!user?.id) {
     const error = new Error('Authentication required');
     error.status = 401;
     throw error;
   }
 
-  if (user.role !== 'TENANT') {
-    const error = new Error('Only tenants may initiate payments');
+  const purpose = String(payload.purpose || '').toUpperCase();
+  const propertyId = String(payload.propertyId || '');
+  if (!['CONTACT_UNLOCK', 'LISTING_BOOST'].includes(purpose)) {
+    const error = new Error('Payment purpose must be CONTACT_UNLOCK or LISTING_BOOST');
+    error.status = 400;
+    throw error;
+  }
+  if (!mongoose.Types.ObjectId.isValid(propertyId)) {
+    const error = new Error('Property ID is invalid');
+    error.status = 400;
+    throw error;
+  }
+  if (String(payload.currency || '').toUpperCase() !== 'KES' || String(payload.method || '').toUpperCase() !== 'MPESA') {
+    const error = new Error('Property payments must use M-PESA in KES');
+    error.status = 400;
+    throw error;
+  }
+  if (payload.phone !== undefined && typeof payload.phone !== 'string') {
+    const error = new Error('Phone must be a string');
+    error.status = 400;
+    throw error;
+  }
+
+  const isUnlock = purpose === 'CONTACT_UNLOCK';
+  const expectedRole = isUnlock ? 'TENANT' : 'LANDLORD';
+  if (user.role !== expectedRole) {
+    const error = new Error(isUnlock ? 'Only tenants may unlock property contacts' : 'Only landlords may boost listings');
     error.status = 403;
     throw error;
   }
 
-  const validation = validateCreatePayload(payload);
-  if (!validation.success) {
-    const error = new Error('Validation failed');
-    error.status = 400;
-    error.errors = validation.errors;
-    throw error;
-  }
-
-  const booking = await Booking.findById(payload.bookingId).populate('property', 'owner price');
-  if (!booking) {
-    const error = new Error('Booking not found');
+  const property = await Property.findById(propertyId);
+  if (!property) {
+    const error = new Error('Property not found');
     error.status = 404;
     throw error;
   }
+  if (!property.isApproved || property.status !== 'AVAILABLE') {
+    const error = new Error('Only approved available properties can be paid for');
+    error.status = 409;
+    throw error;
+  }
 
-  if (normalizeId(booking.tenant) !== normalizeId(user.id)) {
-    const error = new Error('You may only pay for your own booking');
+  const ownerId = normalizeId(property.owner);
+  if (!ownerId) {
+    const error = new Error('Property owner could not be determined');
+    error.status = 409;
+    throw error;
+  }
+  if (!isUnlock && ownerId !== normalizeId(user.id)) {
+    const error = new Error('You may only boost your own property');
     error.status = 403;
     throw error;
   }
 
-  if (booking.status !== 'APPROVED') {
-    const error = new Error('Payment may only be initiated for approved bookings');
-    error.status = 400;
+  if (isUnlock && await PropertyUnlock.exists({ tenant: user.id, property: property._id })) {
+    const error = new Error('You have already unlocked this property');
+    error.status = 409;
     throw error;
   }
-  if (booking.completionRequestedBy) {
-    const error = new Error('A tenancy completion request is in progress. Resolve it before starting another payment.');
+  if (!isUnlock && property.featuredUntil && property.featuredUntil > new Date()) {
+    const error = new Error('This property already has an active boost');
     error.status = 409;
     throw error;
   }
 
-  if (booking.paymentStatus === 'PAID') {
-    const error = new Error('No further payment is required for a paid booking');
-    error.status = 400;
-    throw error;
-  }
-
-  const totalDue = Number(booking.totalDue ?? booking.property?.price);
-  const amountPaid = Number(booking.amountPaid || 0);
-  const amount = totalDue - amountPaid;
-  if (!Number.isFinite(totalDue) || totalDue <= 0 || !Number.isFinite(amount) || amount <= 0) {
-    const error = new Error('Booking payment terms are not configured');
-    error.status = 400;
-    error.errors = [{ field: 'amount', message: 'Amount must be greater than 0' }];
-    throw error;
-  }
-
-  if (payload.amount !== undefined && payload.amount !== null && payload.amount !== '' && Number(payload.amount) !== amount) {
-    const error = new Error('Payment amount must match the amount due');
-    error.status = 400;
-    error.errors = [{ field: 'amount', message: `Amount due is ${amount}` }];
-    throw error;
-  }
-
-  if (String(payload.currency).toUpperCase() !== 'KES') {
-    const error = new Error('Currency must be KES for booking payments');
-    error.status = 400;
-    throw error;
-  }
-
-  const existingPending = await Payment.findOne({ booking: booking._id, status: 'PENDING' });
-  if (existingPending) {
-    const error = new Error('There is already an active pending payment for this booking');
-    error.status = 409;
-    throw error;
-  }
-
-  const payment = await Payment.create({
-    booking: booking._id,
-    tenant: booking.tenant,
-    landlord: booking.landlord,
-    amount,
-    currency: String(payload.currency).toUpperCase(),
-    method: String(payload.method).toUpperCase(),
-    phone: payload.phone ? String(payload.phone).trim() : '',
+  const existingPending = await Payment.findOne({
+    property: property._id,
+    purpose,
+    payer: user.id,
     status: 'PENDING',
   });
-
-  const currentBooking = await Booking.findById(booking._id);
-  if (!currentBooking || currentBooking.status !== 'APPROVED' || currentBooking.completionRequestedBy) {
-    await Payment.deleteOne({ _id: payment._id, status: 'PENDING' });
-    const error = new Error('The booking changed while payment was being created. Refresh and try again.');
-    error.status = 409;
-    throw error;
+  if (existingPending) {
+    return sanitizePayment(existingPending);
   }
 
+  const { unlockFee, boostFee } = getPropertyPaymentFees();
+  const payment = await Payment.create({
+    purpose,
+    payer: user.id,
+    tenant: isUnlock ? user.id : null,
+    landlord: ownerId,
+    property: property._id,
+    amount: isUnlock ? unlockFee : boostFee,
+    currency: 'KES',
+    method: 'MPESA',
+    phone: payload.phone ? payload.phone.trim() : '',
+    status: 'PENDING',
+  });
   return sanitizePayment(payment);
 }
 
-export async function getPaymentById(user, paymentId) {
+export async function getPropertyPayment(user, propertyId, purposeRaw) {
+  if (!user?.id) {
+    const error = new Error('Authentication required');
+    error.status = 401;
+    throw error;
+  }
+  if (!mongoose.Types.ObjectId.isValid(String(propertyId))) {
+    const error = new Error('Property ID is invalid');
+    error.status = 400;
+    throw error;
+  }
+  const purpose = String(purposeRaw || '').toUpperCase();
+  if (!['CONTACT_UNLOCK', 'LISTING_BOOST'].includes(purpose)) {
+    const error = new Error('Payment purpose must be CONTACT_UNLOCK or LISTING_BOOST');
+    error.status = 400;
+    throw error;
+  }
+
+  const payment = await Payment.findOne({
+    property: propertyId,
+    purpose,
+    payer: user.id,
+    status: 'PENDING',
+  }).sort('-createdAt');
+  return payment ? sanitizePayment(payment) : null;
+}
+
+export async function listUnlockedPropertyIds(user) {
+  if (!user?.id) {
+    const error = new Error('Authentication required');
+    error.status = 401;
+    throw error;
+  }
+  if (user.role !== 'TENANT') {
+    const error = new Error('Only tenants may list unlocked properties');
+    error.status = 403;
+    throw error;
+  }
+  const unlocks = await PropertyUnlock.find({ tenant: user.id }).select('property').lean();
+  return unlocks.map(unlock => normalizeId(unlock.property));
+}
+
+export async function getPropertyPaymentById(user, paymentId) {
   if (!user?.id) {
     const error = new Error('Authentication required');
     error.status = 401;
@@ -423,9 +420,10 @@ export async function getPaymentById(user, paymentId) {
     throw error;
   }
 
-  const payment = await Payment.findById(paymentId)
-    .populate('booking', 'tenant landlord property status paymentStatus')
-    .lean();
+  const payment = await Payment.findOne({
+    _id: paymentId,
+    purpose: { $in: ['CONTACT_UNLOCK', 'LISTING_BOOST'] },
+  });
 
   if (!payment) {
     const error = new Error('Payment not found');
@@ -433,7 +431,7 @@ export async function getPaymentById(user, paymentId) {
     throw error;
   }
 
-  const ownerCheck = normalizeId(payment.tenant) === normalizeId(user.id);
+  const ownerCheck = normalizeId(payment.payer || payment.tenant) === normalizeId(user.id);
   const landlordCheck = normalizeId(payment.landlord) === normalizeId(user.id);
   if (user.role === 'ADMIN' || ownerCheck || landlordCheck) {
     return sanitizePayment(payment);
@@ -444,131 +442,6 @@ export async function getPaymentById(user, paymentId) {
   throw error;
 }
 
-export async function listPayments(user, query = {}) {
-  if (!user?.id) {
-    const error = new Error('Authentication required');
-    error.status = 401;
-    throw error;
-  }
-
-  const filter = {};
-  const { page, limit } = parsePagination(query);
-
-  if (query.status) {
-    const normalized = String(query.status).toUpperCase();
-    if (!['PENDING', 'SUCCESS', 'FAILED'].includes(normalized)) {
-      const error = new Error('Invalid payment status filter');
-      error.status = 400;
-      throw error;
-    }
-    filter.status = normalized;
-  }
-
-  if (query.bookingId) {
-    if (!mongoose.Types.ObjectId.isValid(String(query.bookingId))) {
-      const error = new Error('Booking ID filter is invalid');
-      error.status = 400;
-      throw error;
-    }
-    filter.booking = query.bookingId;
-  }
-
-  if (query.tenantId) {
-    if (!mongoose.Types.ObjectId.isValid(String(query.tenantId))) {
-      const error = new Error('Tenant ID filter is invalid');
-      error.status = 400;
-      throw error;
-    }
-    filter.tenant = query.tenantId;
-  }
-
-  if (query.landlordId) {
-    if (!mongoose.Types.ObjectId.isValid(String(query.landlordId))) {
-      const error = new Error('Landlord ID filter is invalid');
-      error.status = 400;
-      throw error;
-    }
-    filter.landlord = query.landlordId;
-  }
-
-  if (user.role === 'TENANT') {
-    filter.tenant = user.id;
-  } else if (user.role === 'LANDLORD') {
-    filter.landlord = user.id;
-  }
-
-  const [payments, total] = await Promise.all([
-    Payment.find(filter)
-      .sort('-createdAt')
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .lean(),
-    Payment.countDocuments(filter),
-  ]);
-
-  return {
-    payments: payments.map(sanitizePayment),
-    pagination: buildPagination(page, limit, total),
-  };
-}
-
-export async function listPaymentsByBookingId(user, bookingId, query = {}) {
-  if (!user?.id) {
-    const error = new Error('Authentication required');
-    error.status = 401;
-    throw error;
-  }
-
-  if (!mongoose.Types.ObjectId.isValid(String(bookingId))) {
-    const error = new Error('Booking ID is invalid');
-    error.status = 400;
-    throw error;
-  }
-
-  const booking = await Booking.findById(bookingId);
-  if (!booking) {
-    const error = new Error('Booking not found');
-    error.status = 404;
-    throw error;
-  }
-
-  const isTenant = normalizeId(booking.tenant) === normalizeId(user.id);
-  const isLandlord = normalizeId(booking.landlord) === normalizeId(user.id);
-
-  if (user.role !== 'ADMIN' && !isTenant && !isLandlord) {
-    const error = new Error('You do not have permission to view payments for this booking');
-    error.status = 403;
-    throw error;
-  }
-
-  const filter = { booking: booking._id };
-  const { page, limit } = parsePagination(query);
-
-  if (query.status) {
-    const normalized = String(query.status).toUpperCase();
-    if (!['PENDING', 'SUCCESS', 'FAILED'].includes(normalized)) {
-      const error = new Error('Invalid payment status filter');
-      error.status = 400;
-      throw error;
-    }
-    filter.status = normalized;
-  }
-
-  const [payments, total] = await Promise.all([
-    Payment.find(filter)
-      .sort('-createdAt')
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .lean(),
-    Payment.countDocuments(filter),
-  ]);
-
-  return {
-    payments: payments.map(sanitizePayment),
-    pagination: buildPagination(page, limit, total),
-  };
-}
-
 export async function initiateStkPush(user, paymentId, phoneRaw) {
   if (!user?.id) {
     const error = new Error('Authentication required');
@@ -576,23 +449,10 @@ export async function initiateStkPush(user, paymentId, phoneRaw) {
     throw error;
   }
 
-  if (user.role !== 'TENANT') {
-    const error = new Error('Only tenants may initiate STK Push');
-    error.status = 403;
-    throw error;
-  }
-
-  // Allow non-ObjectId test ids; call findById and handle chainable or promise results
-  const raw = Payment.findById(paymentId);
-  let payment;
-  if (raw && typeof raw.populate === 'function') {
-    payment = await raw.populate('booking');
-  } else {
-    payment = await raw;
-    if (payment && typeof payment.populate === 'function') {
-      payment = await payment.populate('booking');
-    }
-  }
+  const payment = await Payment.findOne({
+    _id: paymentId,
+    purpose: { $in: ['CONTACT_UNLOCK', 'LISTING_BOOST'] },
+  });
   if (!payment) {
     const error = new Error('Payment not found');
     error.status = 404;
@@ -600,33 +460,34 @@ export async function initiateStkPush(user, paymentId, phoneRaw) {
   }
 
   const normalize = (v) => (v && v.toString ? v.toString() : v);
-  if (normalize(payment.tenant) !== normalize(user.id)) {
+  const purpose = payment.purpose;
+  const payerId = normalize(payment.payer || payment.tenant);
+  if (payerId !== normalize(user.id)) {
     const error = new Error('You may only initiate STK Push for your own payment');
     error.status = 403;
     throw error;
   }
 
-  const booking = await Booking.findById(payment.booking);
-  if (!booking) {
-    const error = new Error('Associated booking not found');
-    error.status = 404;
-    throw error;
-  }
-
-  if (normalize(booking.tenant) !== normalize(user.id)) {
-    const error = new Error('Booking does not belong to authenticated tenant');
+  const expectedRole = purpose === 'CONTACT_UNLOCK' ? 'TENANT' : 'LANDLORD';
+  if (user.role !== expectedRole) {
+    const error = new Error(`Only ${expectedRole.toLowerCase()}s may initiate this property payment`);
     error.status = 403;
     throw error;
   }
-
-  if (booking.status !== 'APPROVED') {
-    const error = new Error('STK Push may only be initiated for approved bookings');
+  const property = await Property.findById(payment.property);
+  if (!property || !property.isApproved || property.status !== 'AVAILABLE') {
+    const error = new Error('This property is no longer approved and available for payment');
     error.status = 409;
     throw error;
   }
-  if (booking.completionRequestedBy) {
-    const error = new Error('A tenancy completion request is in progress. Resolve it before starting another payment.');
-    error.status = 409;
+  if (purpose === 'LISTING_BOOST' && normalize(property.owner) !== normalize(user.id)) {
+    const error = new Error('You may only boost your own property');
+    error.status = 403;
+    throw error;
+  }
+  if (purpose === 'CONTACT_UNLOCK' && normalize(property.owner) === normalize(user.id)) {
+    const error = new Error('Property owners do not need to unlock their own contacts');
+    error.status = 403;
     throw error;
   }
 
@@ -719,25 +580,30 @@ export async function queryStkPushStatus(user, paymentId) {
     error.status = 401;
     throw error;
   }
-  if (user.role !== 'TENANT') {
-    const error = new Error('Only tenants may query their STK Push status');
-    error.status = 403;
-    throw error;
-  }
   if (!mongoose.Types.ObjectId.isValid(String(paymentId))) {
     const error = new Error('Payment ID is invalid');
     error.status = 400;
     throw error;
   }
 
-  const payment = await Payment.findById(paymentId);
+  const payment = await Payment.findOne({
+    _id: paymentId,
+    purpose: { $in: ['CONTACT_UNLOCK', 'LISTING_BOOST'] },
+  });
   if (!payment) {
     const error = new Error('Payment not found');
     error.status = 404;
     throw error;
   }
-  if (normalizeId(payment.tenant) !== normalizeId(user.id)) {
+  if (normalizeId(payment.payer || payment.tenant) !== normalizeId(user.id)) {
     const error = new Error('You may only query your own payment');
+    error.status = 403;
+    throw error;
+  }
+  const purpose = payment.purpose;
+  const expectedRole = purpose === 'LISTING_BOOST' ? 'LANDLORD' : 'TENANT';
+  if (user.role !== expectedRole) {
+    const error = new Error(`Only ${expectedRole.toLowerCase()}s may query this payment`);
     error.status = 403;
     throw error;
   }
@@ -771,12 +637,12 @@ export async function queryStkPushStatus(user, paymentId) {
   }
 
   if (result.resultCode === 0) {
-    const bookingPaid = await ensureBookingPaid(payment);
-    if (!bookingPaid) {
+    const paymentGranted = await grantPaymentBenefit(payment);
+    if (!paymentGranted) {
       return {
         payment: sanitizePayment(payment),
         resultCode: result.resultCode,
-        resultDescription: 'Booking reconciliation pending',
+        resultDescription: 'Payment reconciliation pending',
       };
     }
     await Payment.updateOne(

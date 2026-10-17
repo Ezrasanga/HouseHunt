@@ -8,21 +8,19 @@ import {
   closeTestBooking,
   createBooking,
   markBookingAsTestData,
+  resolveBookingAvailability,
   updateBookingCompletion,
 } from '../services/bookingService.js';
 import Booking from '../models/Booking.js';
-import Payment from '../models/Payment.js';
 import Property from '../models/Property.js';
 
 const originalFindOne = Booking.findOne;
-const originalBookingDistinct = Booking.distinct;
 const originalCreate = Booking.create;
 const originalBookingFindById = Booking.findById;
 const originalBookingFindOneAndUpdate = Booking.findOneAndUpdate;
 const originalPropertyFindById = Property.findById;
 const originalPropertyFindOneAndUpdate = Property.findOneAndUpdate;
 const originalPropertyUpdateOne = Property.updateOne;
-const originalPaymentFindOne = Payment.findOne;
 
 test('createBooking creates a pending booking for an approved available property', async () => {
   const created = [];
@@ -51,7 +49,8 @@ test('createBooking creates a pending booking for an approved available property
   );
 
   assert.equal(result.booking.status, 'PENDING');
-  assert.equal(result.booking.paymentStatus, 'UNPAID');
+  assert.equal(result.booking.status, 'PENDING');
+  assert.equal(Object.hasOwn(created[0], 'paymentStatus'), false);
   assert.equal(created[0].tenant, '507f191e810c19729de860ec');
   assert.equal(created[0].landlord, '507f191e810c19729de860eb');
   assert.equal(created[0].property, '507f191e810c19729de860ea');
@@ -207,45 +206,29 @@ test('simultaneous approvals atomically claim a property for only one booking', 
   }
 });
 
-test('cancelling an unpaid approved booking restores availability', async () => {
+test('tenant can cancel a pending booking request', async () => {
   const tenantId = new mongoose.Types.ObjectId();
-  const propertyId = new mongoose.Types.ObjectId();
   const booking = {
     _id: new mongoose.Types.ObjectId(),
     tenant: tenantId,
-    property: propertyId,
-    status: 'APPROVED',
-    paymentStatus: 'UNPAID',
-    amountPaid: 0,
+    status: 'PENDING',
   };
-  const property = { status: 'OCCUPIED' };
   Booking.findById = async () => booking;
-  Booking.findOne = async () => null;
-  Booking.distinct = async () => [];
   Booking.findOneAndUpdate = async (_filter, update) => {
     Object.assign(booking, update.$set);
     return booking;
-  };
-  Payment.findOne = async () => null;
-  Property.updateOne = async (_filter, update) => {
-    property.status = update.$set.status;
   };
 
   try {
     const result = await cancelBooking(booking._id, { id: tenantId, role: 'TENANT' });
     assert.equal(result.booking.status, 'CANCELLED');
-    assert.equal(property.status, 'AVAILABLE');
   } finally {
     Booking.findById = originalBookingFindById;
-    Booking.findOne = originalFindOne;
-    Booking.distinct = originalBookingDistinct;
     Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
-    Payment.findOne = originalPaymentFindOne;
-    Property.updateOne = originalPropertyUpdateOne;
   }
 });
 
-test('tenant cancellation is blocked after payment', async () => {
+test('tenant cannot cancel an approved booking regardless of historical payment state', async () => {
   const tenantId = new mongoose.Types.ObjectId();
   const booking = {
     _id: new mongoose.Types.ObjectId(),
@@ -263,8 +246,8 @@ test('tenant cancellation is blocked after payment', async () => {
     await assert.rejects(
       cancelBooking(booking._id, { id: tenantId, role: 'TENANT' }),
       error => {
-        assert.equal(error.status, 409);
-        assert.match(error.message, /has a payment and cannot be cancelled/);
+        assert.equal(error.status, 400);
+        assert.match(error.message, /cannot be cancelled in its current state/);
         return true;
       }
     );
@@ -274,26 +257,24 @@ test('tenant cancellation is blocked after payment', async () => {
   }
 });
 
-test('admin can close only explicitly marked unpaid test bookings', async () => {
+test('admin can close explicitly marked test bookings regardless of legacy payment state', async () => {
   const adminId = new mongoose.Types.ObjectId();
   const propertyId = new mongoose.Types.ObjectId();
   const booking = {
     _id: new mongoose.Types.ObjectId(),
     property: propertyId,
     status: 'APPROVED',
-    paymentStatus: 'UNPAID',
-    amountPaid: 0,
+    paymentStatus: 'PAID',
+    amountPaid: 5000,
     isTestData: true,
   };
   const property = { status: 'OCCUPIED' };
   Booking.findById = async () => booking;
   Booking.findOne = async () => null;
-  Booking.distinct = async () => [];
   Booking.findOneAndUpdate = async (_filter, update) => {
     Object.assign(booking, update.$set);
     return booking;
   };
-  Payment.findOne = async () => null;
   Property.updateOne = async (_filter, update) => {
     property.status = update.$set.status;
   };
@@ -305,14 +286,12 @@ test('admin can close only explicitly marked unpaid test bookings', async () => 
   } finally {
     Booking.findById = originalBookingFindById;
     Booking.findOne = originalFindOne;
-    Booking.distinct = originalBookingDistinct;
     Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
-    Payment.findOne = originalPaymentFindOne;
     Property.updateOne = originalPropertyUpdateOne;
   }
 });
 
-test('tenancy completion requires both parties and releases property without issuing a refund', async () => {
+test('tenancy completion requires both parties and preserves legacy payment fields', async () => {
   const tenantId = new mongoose.Types.ObjectId();
   const landlordId = new mongoose.Types.ObjectId();
   const propertyId = new mongoose.Types.ObjectId();
@@ -329,11 +308,6 @@ test('tenancy completion requires both parties and releases property without iss
     completedAt: null,
   };
   const property = { status: 'OCCUPIED' };
-  const savedPayments = [];
-  Payment.findOne = async filter => {
-    if (filter.status === 'PENDING') return null;
-    return null;
-  };
   Booking.findById = async () => booking;
   Booking.findOneAndUpdate = async (filter, update) => {
     if (filter.status !== booking.status) return null;
@@ -346,7 +320,6 @@ test('tenancy completion requires both parties and releases property without iss
     return booking;
   };
   Booking.findOne = async () => null;
-  Booking.distinct = async () => [];
   Property.updateOne = async (_filter, update) => {
     property.status = update.$set.status;
   };
@@ -371,19 +344,16 @@ test('tenancy completion requires both parties and releases property without iss
     assert.ok(booking.completedAt instanceof Date);
     assert.equal(booking.paymentStatus, 'PAID');
     assert.equal(booking.amountPaid, 12000);
-    assert.deepEqual(savedPayments, []);
     assert.equal(property.status, 'AVAILABLE');
   } finally {
     Booking.findById = originalBookingFindById;
     Booking.findOne = originalFindOne;
     Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
-    Booking.distinct = originalBookingDistinct;
-    Payment.findOne = originalPaymentFindOne;
     Property.updateOne = originalPropertyUpdateOne;
   }
 });
 
-test('tenancy completion is blocked while a payment is pending', async () => {
+test('tenancy completion ignores legacy pending booking payments', async () => {
   const booking = {
     _id: new mongoose.Types.ObjectId(),
     tenant: 'tenant-1',
@@ -392,30 +362,74 @@ test('tenancy completion is blocked while a payment is pending', async () => {
     status: 'APPROVED',
     completionRequestedBy: 'LANDLORD',
   };
+  const property = { status: 'OCCUPIED' };
+  let completionConfirmed = false;
   Booking.findById = async () => booking;
-  Payment.findOne = async () => ({ status: 'PENDING' });
-  Booking.findOneAndUpdate = async () => {
-    throw new Error('A booking with a pending payment must not be completed.');
+  Booking.findOneAndUpdate = async (_filter, update) => {
+    Object.assign(booking, update.$set);
+    completionConfirmed = true;
+    return booking;
+  };
+  Booking.findOne = async () => null;
+  Property.updateOne = async (_filter, update) => {
+    property.status = update.$set.status;
   };
 
   try {
-    await assert.rejects(
-      updateBookingCompletion(
-        booking._id,
-        { id: 'tenant-1', role: 'TENANT' },
-        'CONFIRM'
-      ),
-      error => {
-        assert.equal(error.status, 409);
-        assert.match(error.message, /pending payment/);
-        return true;
-      }
+    const result = await updateBookingCompletion(
+      booking._id,
+      { id: 'tenant-1', role: 'TENANT' },
+      'CONFIRM'
     );
+    assert.equal(result.completed, true);
+    assert.equal(completionConfirmed, true);
+    assert.equal(property.status, 'AVAILABLE');
+  } finally {
+    Booking.findById = originalBookingFindById;
+    Booking.findOne = originalFindOne;
+    Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
+    Property.updateOne = originalPropertyUpdateOne;
+  }
+});
+
+test('admin can resolve an active booking and release its property', async () => {
+  const booking = {
+    _id: new mongoose.Types.ObjectId(),
+    property: new mongoose.Types.ObjectId(),
+    status: 'APPROVED',
+  };
+  const property = { status: 'OCCUPIED' };
+  Booking.findById = async () => booking;
+  Booking.findOneAndUpdate = async (_filter, update) => {
+    Object.assign(booking, update.$set);
+    return booking;
+  };
+  Booking.findOne = async () => null;
+  Property.updateOne = async (_filter, update) => {
+    property.status = update.$set.status;
+  };
+
+  try {
+    const result = await resolveBookingAvailability(
+      booking._id,
+      { id: new mongoose.Types.ObjectId(), role: 'ADMIN' }
+    );
+    assert.equal(result.completed, true);
+    assert.equal(booking.status, 'COMPLETED');
+    assert.equal(property.status, 'AVAILABLE');
   } finally {
     Booking.findById = originalBookingFindById;
     Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
-    Payment.findOne = originalPaymentFindOne;
+    Booking.findOne = originalFindOne;
+    Property.updateOne = originalPropertyUpdateOne;
   }
+});
+
+test('only admins can resolve booking availability', async () => {
+  await assert.rejects(
+    resolveBookingAvailability('booking-1', { id: 'landlord-1', role: 'LANDLORD' }),
+    error => error.status === 403
+  );
 });
 
 test('a completion request can be withdrawn by the party who made it', async () => {
@@ -429,7 +443,6 @@ test('a completion request can be withdrawn by the party who made it', async () 
     completionRequestedAt: new Date(),
   };
   Booking.findById = async () => booking;
-  Payment.findOne = async () => null;
   Booking.findOneAndUpdate = async (_filter, update) => {
     Object.assign(booking, update.$set);
     return booking;
@@ -447,7 +460,6 @@ test('a completion request can be withdrawn by the party who made it', async () 
   } finally {
     Booking.findById = originalBookingFindById;
     Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
-    Payment.findOne = originalPaymentFindOne;
   }
 });
 
@@ -463,7 +475,6 @@ test('only an admin can explicitly flag unpaid data as test data', async () => {
     Object.assign(booking, update.$set);
     return booking;
   };
-  Payment.findOne = async () => null;
 
   try {
     await assert.rejects(
@@ -476,6 +487,5 @@ test('only an admin can explicitly flag unpaid data as test data', async () => {
   } finally {
     Booking.findById = originalBookingFindById;
     Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
-    Payment.findOne = originalPaymentFindOne;
   }
 });

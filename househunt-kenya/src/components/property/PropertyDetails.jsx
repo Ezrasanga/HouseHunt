@@ -1,10 +1,13 @@
+import Badge from "../common/Badge";
+import Icon from "../common/Icon";
+
 export default function PropertyDetails({
   liveProp,
   landlord,
   user,
   isUnlocked,
   settings,
-  setPayModal,
+  onRequestPayment,
   setAuthModal,
   closeModal,
   canBook,
@@ -20,12 +23,12 @@ export default function PropertyDetails({
       <div className="mdetail-head">
         <div>
           <div className="mdetail-badges">
-            <span className={`sbadge sb-${statusKey}`}>{isAvailable ? "✓ Available" : "⊘ Taken"}</span>
-            {liveProp.boosted && <span className="sbadge sb-bo">⭐ Boosted</span>}
-            {liveProp.flagged && <span className="sbadge sb-fl">🚩 Flagged</span>}
+            <Badge className={`sbadge sb-${statusKey}`}>{isAvailable ? "✓ Available" : "⊘ Taken"}</Badge>
+            {liveProp.boosted && <Badge className="sbadge sb-bo"><Icon name="star" /> Boosted</Badge>}
+            {liveProp.flagged && <Badge className="sbadge sb-fl"><Icon name="flag" /> Flagged</Badge>}
           </div>
           <h2 id="property-details-title" className="mdetail-title">{liveProp.title}</h2>
-          <p className="mdetail-location">📍 {user?.role !== "tenant" || isUnlocked(liveProp.id) ? liveProp.location : "Location hidden — unlock to view"}</p>
+          <p className="mdetail-location"><Icon name="mapPin" /> {user?.role !== "tenant" || isUnlocked(liveProp.id) ? liveProp.location : "Location hidden — unlock to view"}</p>
           <div className="mdetail-meta-row">
             <span>{liveProp.type}</span>
             {liveProp.rooms && <span>{liveProp.rooms}</span>}
@@ -88,16 +91,16 @@ export default function PropertyDetails({
 
           {user?.role === "tenant" && !isUnlocked(liveProp.id) && (
             <div className="locked detail-locked">
-              <div className="li">🔒</div>
+              <div className="li"><Icon name="lock" /></div>
               <h4>Contact & location locked</h4>
               <p>Unlock to reveal the exact address and landlord contact info.</p>
-              <button className="bunlock" type="button" onClick={() => setPayModal({ type: "unlock", propId: liveProp.id })}>🔓 Unlock for KSh {settings.unlockFee}</button>
+              <button className="bunlock" type="button" onClick={() => onRequestPayment({ type: "unlock", propId: liveProp.id })}><Icon name="unlock" /> Unlock for KSh {settings.unlockFee}</button>
             </div>
           )}
 
           {user?.role === "tenant" && canBook && (
             <div className="pd-action-panel" style={{ marginTop: "1rem" }}>
-              <button className="bp" type="button" onClick={onBookRequest}>📅 Request booking</button>
+              <button className="bp" type="button" onClick={onBookRequest}><Icon name="calendar" /> Request booking</button>
             </div>
           )}
 
@@ -105,15 +108,15 @@ export default function PropertyDetails({
             <div className="mcbox">
               <h4>Contact the landlord</h4>
               <div className="cgrid">
-                {liveProp.contact.phone && <a className="citem" href={`tel:${liveProp.contact.phone}`}>📞 {liveProp.contact.phone}</a>}
-                {liveProp.contact.email && <a className="citem" href={`mailto:${liveProp.contact.email}`}>✉️ {liveProp.contact.email}</a>}
-                {liveProp.contact.whatsapp && <a className="citem" href={`https://wa.me/${liveProp.contact.whatsapp}`} target="_blank" rel="noreferrer">💬 WhatsApp</a>}
+                {liveProp.contact.phone && <a className="citem" href={`tel:${liveProp.contact.phone}`}><Icon name="phone" /> {liveProp.contact.phone}</a>}
+                {liveProp.contact.email && <a className="citem" href={`mailto:${liveProp.contact.email}`}><Icon name="mail" /> {liveProp.contact.email}</a>}
+                {liveProp.contact.whatsapp && <a className="citem" href={`https://wa.me/${liveProp.contact.whatsapp}`} target="_blank" rel="noreferrer"><Icon name="message" /> WhatsApp</a>}
               </div>
               <div className="srow">
-                {liveProp.contact.whatsapp && <a className="sbtn sb-wa" href={`https://wa.me/${liveProp.contact.whatsapp}`} target="_blank" rel="noreferrer">💬 WhatsApp</a>}
-                {liveProp.contact.ig && <a className="sbtn sb-ig" href={`https://instagram.com/${liveProp.contact.ig}`} target="_blank" rel="noreferrer">📸 Instagram</a>}
-                {liveProp.contact.fb && <a className="sbtn sb-fb" href={`https://facebook.com/${liveProp.contact.fb}`} target="_blank" rel="noreferrer">👍 Facebook</a>}
-                {liveProp.contact.tt && <a className="sbtn sb-tt" href={`https://tiktok.com/@${liveProp.contact.tt}`} target="_blank" rel="noreferrer">🎵 TikTok</a>}
+                {liveProp.contact.whatsapp && <a className="sbtn sb-wa" href={`https://wa.me/${liveProp.contact.whatsapp}`} target="_blank" rel="noreferrer"><Icon name="message" /> WhatsApp</a>}
+                {liveProp.contact.ig && <a className="sbtn sb-ig" href={`https://instagram.com/${liveProp.contact.ig}`} target="_blank" rel="noreferrer"><Icon name="camera" /> Instagram</a>}
+                {liveProp.contact.fb && <a className="sbtn sb-fb" href={`https://facebook.com/${liveProp.contact.fb}`} target="_blank" rel="noreferrer"><Icon name="users" /> Facebook</a>}
+                {liveProp.contact.tt && <a className="sbtn sb-tt" href={`https://tiktok.com/@${liveProp.contact.tt}`} target="_blank" rel="noreferrer"><Icon name="message" /> TikTok</a>}
                 {liveProp.contact.tw && <a className="sbtn sb-tw" href={`https://twitter.com/${liveProp.contact.tw}`} target="_blank" rel="noreferrer">𝕏 Twitter</a>}
               </div>
             </div>
@@ -121,7 +124,7 @@ export default function PropertyDetails({
 
           {user?.role === "tenant" && !hasContact && (
             <div className="locked detail-locked">
-              <div className="li">ℹ️</div>
+              <div className="li"><Icon name="info" /></div>
               <h4>No landlord contact available</h4>
               <p>This listing does not include phone or WhatsApp details yet.</p>
             </div>

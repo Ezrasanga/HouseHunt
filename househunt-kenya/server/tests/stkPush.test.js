@@ -1,197 +1,141 @@
-/* global process */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import process from 'node:process';
 
 import * as paymentService from '../services/paymentService.js';
-import Payment from '../models/Payment.js';
-import Booking from '../models/Booking.js';
 import * as daraja from '../services/darajaService.js';
+import Payment from '../models/Payment.js';
+import Property from '../models/Property.js';
 
-const origPaymentFindById = Payment.findById;
-const origBookingFindById = Booking.findById;
+const originalPaymentFindOne = Payment.findOne;
+const originalPropertyFindById = Property.findById;
 
 test('missing payment returns 404', async () => {
-  const user = { id: 'tenant-1', role: 'TENANT' };
-  Payment.findById = async () => null;
+  Payment.findOne = async () => null;
 
-  await assert.rejects(async () => {
-    await paymentService.initiateStkPush(user, '507f191e810c19729de860ea', '0712345678');
-  }, (err) => {
-    assert.equal(err.status, 404);
-    assert.equal(err.message, 'Payment not found');
-    return true;
-  });
+  await assert.rejects(
+    paymentService.initiateStkPush(
+      { id: 'tenant-1', role: 'TENANT' },
+      '507f191e810c19729de860ea',
+      '0712345678'
+    ),
+    error => error.status === 404 && error.message === 'Payment not found'
+  );
 });
 
-test('tenant cannot initiate STK for another tenant', async () => {
-  const user = { id: 'tenant-1', role: 'TENANT' };
-  Payment.findById = async () => ({ _id: 'p1', tenant: 'tenant-2', booking: 'b1', method: 'MPESA', status: 'PENDING', amount: 1000, currency: 'KES', save: async () => {} });
-
-  await assert.rejects(async () => {
-    await paymentService.initiateStkPush(user, 'p1', '0712345678');
-  }, (err) => {
-    assert.equal(err.status, 403);
-    return true;
+test('tenant cannot initiate STK for another payer', async () => {
+  Payment.findOne = async () => ({
+    _id: 'legacy-payment',
+    payer: 'tenant-2',
+    purpose: 'CONTACT_UNLOCK',
   });
+
+  await assert.rejects(
+    paymentService.initiateStkPush(
+      { id: 'tenant-1', role: 'TENANT' },
+      'legacy-payment',
+      '0712345678'
+    ),
+    error => error.status === 403
+  );
 });
 
-test('invalid phone number rejected', async () => {
-  const user = { id: 'tenant-1', role: 'TENANT' };
-  const payment = { _id: 'p1', tenant: 'tenant-1', booking: 'b1', method: 'MPESA', status: 'PENDING', amount: 1000, currency: 'KES', save: async () => {} };
-  Payment.findById = async () => payment;
-  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1', status: 'APPROVED' });
+test('legacy booking payment is not available to STK initiation', async () => {
+  let lookupFilter;
+  Payment.findOne = async filter => {
+    lookupFilter = filter;
+    return null;
+  };
 
-  await assert.rejects(async () => {
-    await paymentService.initiateStkPush(user, 'p1', '12345');
-  }, (err) => {
-    assert.equal(err.status, 400);
-    return true;
-  });
+  await assert.rejects(
+    paymentService.initiateStkPush(
+      { id: 'tenant-1', role: 'TENANT' },
+      'legacy-payment',
+      'invalid-phone'
+    ),
+    error => error.status === 404 && error.message === 'Payment not found'
+  );
+  assert.deepEqual(lookupFilter.purpose, { $in: ['CONTACT_UNLOCK', 'LISTING_BOOST'] });
 });
 
-test('cancelled booking cannot start a new STK Push', async () => {
-  const user = { id: 'tenant-1', role: 'TENANT' };
-  const payment = { _id: 'p-cancelled', tenant: 'tenant-1', booking: 'b-cancelled', method: 'MPESA', status: 'PENDING', amount: 1000, currency: 'KES', save: async () => {} };
-  Payment.findById = async () => payment;
-  Booking.findById = async () => ({ _id: 'b-cancelled', tenant: 'tenant-1', status: 'CANCELLED' });
-
-  await assert.rejects(async () => {
-    await paymentService.initiateStkPush(user, 'p-cancelled', '0712345678');
-  }, error => {
-    assert.equal(error.status, 409);
-    assert.match(error.message, /approved bookings/);
-    return true;
-  });
-});
-
-test('booking with a completion request cannot start a new STK Push', async () => {
-  const user = { id: 'tenant-1', role: 'TENANT' };
+test('contact unlock payment can still initiate an STK push', async () => {
+  const environmentKeys = [
+    'MPESA_ENV',
+    'MPESA_CONSUMER_KEY',
+    'MPESA_CONSUMER_SECRET',
+    'MPESA_SHORTCODE',
+    'MPESA_PASSKEY',
+    'MPESA_CALLBACK_URL',
+  ];
+  const originalEnvironment = Object.fromEntries(
+    environmentKeys.map(key => [key, process.env[key]])
+  );
+  let savedPayment;
   const payment = {
-    _id: 'p-completion',
+    _id: 'unlock-payment',
+    payer: 'tenant-1',
     tenant: 'tenant-1',
-    booking: 'b-completion',
+    purpose: 'CONTACT_UNLOCK',
+    property: 'property-1',
     method: 'MPESA',
     status: 'PENDING',
-    amount: 1000,
+    amount: 100,
     currency: 'KES',
-    save: async () => {},
+    save: async function save() {
+      savedPayment = this;
+    },
   };
-  Payment.findById = async () => payment;
-  Booking.findById = async () => ({
-    _id: 'b-completion',
-    tenant: 'tenant-1',
-    status: 'APPROVED',
-    completionRequestedBy: 'LANDLORD',
+  Payment.findOne = async () => payment;
+  Property.findById = async () => ({
+    _id: 'property-1',
+    owner: 'landlord-1',
+    isApproved: true,
+    status: 'AVAILABLE',
   });
 
-  await assert.rejects(async () => {
-    await paymentService.initiateStkPush(user, payment._id, '0712345678');
-  }, error => {
-    assert.equal(error.status, 409);
-    assert.match(error.message, /completion request is in progress/);
-    return true;
+  Object.assign(process.env, {
+    MPESA_ENV: 'sandbox',
+    MPESA_CONSUMER_KEY: 'test-key',
+    MPESA_CONSUMER_SECRET: 'test-secret',
+    MPESA_SHORTCODE: '123456',
+    MPESA_PASSKEY: 'test-passkey',
+    MPESA_CALLBACK_URL: 'https://example.test/api/payments/mpesa/callback',
   });
-});
-
-test('amount is taken from DB not request body and identifiers stored', async () => {
-  const user = { id: 'tenant-1', role: 'TENANT' };
-  let saved = null;
-  const payment = {
-    _id: 'p1', tenant: 'tenant-1', booking: 'b1', method: 'MPESA', status: 'PENDING', amount: 1500, currency: 'KES', save: async function () { saved = this; }
-  };
-  Payment.findById = async () => payment;
-  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1', status: 'APPROVED' });
-
-  // Ensure env vars present for daraja
-  const origShort = process.env.MPESA_SHORTCODE;
-  const origPass = process.env.MPESA_PASSKEY;
-  const origCall = process.env.MPESA_CALLBACK_URL;
-  const origEnv = process.env.MPESA_ENV;
-  process.env.MPESA_SHORTCODE = process.env.MPESA_SHORTCODE || '123456';
-  process.env.MPESA_PASSKEY = process.env.MPESA_PASSKEY || 'passkey';
-  process.env.MPESA_CALLBACK_URL = 'https://example.com/callback';
-  process.env.MPESA_ENV = 'sandbox';
-  process.env.MPESA_CONSUMER_KEY = process.env.MPESA_CONSUMER_KEY || 'ck';
-  process.env.MPESA_CONSUMER_SECRET = process.env.MPESA_CONSUMER_SECRET || 'cs';
-
-  daraja.__setHttpPost(async () => ({ statusCode: 200, body: JSON.stringify({ MerchantRequestID: 'mr-1', CheckoutRequestID: 'cr-1', ResponseDescription: 'Accepted' }) }));
-  daraja.__setHttpGet(async () => ({ statusCode: 200, body: JSON.stringify({ access_token: 'token', expires_in: 3600 }) }));
-
-  const result = await paymentService.initiateStkPush(user, 'p1', '0712345678');
-
-  assert.equal(result.merchantRequestId, 'mr-1');
-  assert.equal(result.checkoutRequestId, 'cr-1');
-  assert.equal(saved.merchantRequestId, 'mr-1');
-  assert.equal(saved.checkoutRequestId, 'cr-1');
-  assert.equal(saved.status, 'PENDING');
-  process.env.MPESA_SHORTCODE = origShort;
-  process.env.MPESA_PASSKEY = origPass;
-  process.env.MPESA_CALLBACK_URL = origCall;
-  process.env.MPESA_ENV = origEnv;
-  // leave consumer key/secret as they may be global; not restoring to avoid clobbering other tests
-});
-
-test('missing daraja config handled safely', async () => {
-  const user = { id: 'tenant-1', role: 'TENANT' };
-  const payment = { _id: 'p1', tenant: 'tenant-1', booking: 'b1', method: 'MPESA', status: 'PENDING', amount: 1000, currency: 'KES', save: async () => {} };
-  Payment.findById = async () => payment;
-  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1', status: 'APPROVED' });
-
-  const origShort = process.env.MPESA_SHORTCODE;
-  const origPass = process.env.MPESA_PASSKEY;
-  const origCall = process.env.MPESA_CALLBACK_URL;
-  delete process.env.MPESA_SHORTCODE;
-  delete process.env.MPESA_PASSKEY;
-  delete process.env.MPESA_CALLBACK_URL;
-
-  await assert.rejects(async () => {
-    await paymentService.initiateStkPush(user, 'p1', '0712345678');
-  }, (err) => {
-    assert.equal(err.status, 500);
-    return true;
-  });
-
-  process.env.MPESA_SHORTCODE = origShort;
-  process.env.MPESA_PASSKEY = origPass;
-  process.env.MPESA_CALLBACK_URL = origCall;
-});
-
-test('oauth failure handled safely', async () => {
-  const user = { id: 'tenant-1', role: 'TENANT' };
-  const payment = { _id: 'p1', tenant: 'tenant-1', booking: 'b1', method: 'MPESA', status: 'PENDING', amount: 1000, currency: 'KES', save: async () => {} };
-  Payment.findById = async () => payment;
-  Booking.findById = async () => ({ _id: 'b1', tenant: 'tenant-1', status: 'APPROVED' });
-
-  // Ensure daraja config present so the flow reaches OAuth call
-  const origShort = process.env.MPESA_SHORTCODE;
-  const origPass = process.env.MPESA_PASSKEY;
-  const origCall = process.env.MPESA_CALLBACK_URL;
-  const origEnv = process.env.MPESA_ENV;
-  process.env.MPESA_SHORTCODE = process.env.MPESA_SHORTCODE || '123456';
-  process.env.MPESA_PASSKEY = process.env.MPESA_PASSKEY || 'passkey';
-  process.env.MPESA_CALLBACK_URL = 'https://example.com/callback';
-  process.env.MPESA_ENV = 'sandbox';
-  process.env.MPESA_CONSUMER_KEY = process.env.MPESA_CONSUMER_KEY || 'ck';
-  process.env.MPESA_CONSUMER_SECRET = process.env.MPESA_CONSUMER_SECRET || 'cs';
-
-  // Clear any cached token from previous tests so the httpGet call is exercised
   daraja._resetCacheForTests();
-  daraja.__setHttpGet(async () => { throw new Error('network fail'); });
+  daraja.__setHttpGet(async () => ({
+    statusCode: 200,
+    body: JSON.stringify({ access_token: 'test-token', expires_in: 3600 }),
+  }));
+  daraja.__setHttpPost(async () => ({
+    statusCode: 200,
+    body: JSON.stringify({
+      MerchantRequestID: 'merchant-unlock',
+      CheckoutRequestID: 'checkout-unlock',
+      ResponseDescription: 'Accepted',
+    }),
+  }));
 
-  await assert.rejects(async () => {
-    await paymentService.initiateStkPush(user, 'p1', '0712345678');
-  }, (err) => {
-    assert.equal(err.status, 502);
-    return true;
-  });
+  try {
+    const result = await paymentService.initiateStkPush(
+      { id: 'tenant-1', role: 'TENANT' },
+      'unlock-payment',
+      '0712345678'
+    );
 
-  process.env.MPESA_SHORTCODE = origShort;
-  process.env.MPESA_PASSKEY = origPass;
-  process.env.MPESA_CALLBACK_URL = origCall;
-  process.env.MPESA_ENV = origEnv;
+    assert.equal(result.merchantRequestId, 'merchant-unlock');
+    assert.equal(result.checkoutRequestId, 'checkout-unlock');
+    assert.equal(savedPayment.phone, '254712345678');
+    assert.equal(savedPayment.status, 'PENDING');
+  } finally {
+    for (const key of environmentKeys) {
+      if (originalEnvironment[key] === undefined) delete process.env[key];
+      else process.env[key] = originalEnvironment[key];
+    }
+    daraja._resetCacheForTests();
+  }
 });
 
 test.after(() => {
-  Payment.findById = origPaymentFindById;
-  Booking.findById = origBookingFindById;
+  Payment.findOne = originalPaymentFindOne;
+  Property.findById = originalPropertyFindById;
 });

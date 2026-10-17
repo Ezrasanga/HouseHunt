@@ -27,21 +27,45 @@ Configure `MPESA_ENV=sandbox`, `MPESA_CONSUMER_KEY`, `MPESA_CONSUMER_SECRET`,
 receive Daraja callbacks. Keep credentials out of source control and restart
 the backend after changing its environment.
 
-For an end-to-end check, approve a property, create and approve a tenant booking,
-then send an STK Push from the tenant booking screen using a Daraja-supported
-sandbox phone number. The callback updates the payment automatically. The
-tenant can also use **Check payment status** to query Daraja when a callback is
-delayed; confirmed success or failure is reflected in the booking, while an
-unfinished request remains pending.
+## Property contact unlocks and listing boosts
+
+Property payments use the same server-initiated Daraja STK Push flow. Tenants
+can unlock a property's full street address and landlord contact details;
+landlords can boost their own approved, available listing for 30 days. The
+benefit is granted only after Daraja confirms the payment by callback or STK
+query. Prices are server-controlled using `PROPERTY_UNLOCK_FEE_KES` (default
+`100`) and `PROPERTY_BOOST_FEE_KES` (default `200`). Set these values in the
+server environment, not in the browser. Live collections require Safaricom
+production credentials and approval; sandbox credentials are for testing only.
+The application does not collect rent, deposits, or booking payments. Legacy
+booking-payment records are retained for history only. There are no booking
+payment creation, listing, or STK API endpoints; legacy callbacks may update a
+payment's transaction record but do not update a booking's payment or
+availability state.
+
+For a sandbox end-to-end check, configure the Daraja environment and public
+HTTPS callback, then unlock an approved listing as a tenant using a
+Daraja-supported sandbox phone number. Approve the STK prompt; the callback or
+the in-app status query should grant access only after Daraja confirms success.
+Landlords can use the same flow to boost their own approved available listings.
 
 ## Tenancy completion
 
 After a tenancy ends, either the tenant or landlord can request completion from
 the approved booking. The other party must confirm before the booking becomes
-`COMPLETED` and the property can become available for relisting. Either party
-may withdraw their own unconfirmed request. A pending M-PESA payment blocks
-completion, and new payments are blocked while a completion request is active.
-Completing a booking does not change or refund payment records.
+`COMPLETED`; when no other active confirmed booking remains, the listing becomes
+available again. Either party may withdraw their own unconfirmed request.
+Booking approval marks a listing taken only after the landlord confirms the
+arrangement with the tenant. A pending tenant request does not reserve the
+property. Landlords can also update availability for arrangements made outside
+HouseHunt with `PATCH /api/properties/:id/status`; only the owner of an
+approved listing can make that change, and active confirmed bookings prevent
+marking it available. Admins can explicitly resolve disputed active bookings
+through `PATCH /api/bookings/:id/admin-resolve`, with an audit entry.
+
+Tenants and landlords arrange rent and deposits directly with each other.
+HouseHunt records interest and listing status; it does not verify leases,
+collect landlord payments, or provide refunds.
 
 Endpoints are exposed under `/api/*`.
 

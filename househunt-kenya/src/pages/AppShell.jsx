@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FiCheckCircle, FiCreditCard, FiPhone } from "react-icons/fi";
 import { useLocation, useNavigate } from "react-router-dom";
+import Icon from "../components/common/Icon";
 import useAuth from "../hooks/useAuth";
 import useBookings from "../hooks/useBookings";
 import useProperties from "../hooks/useProperties";
@@ -14,8 +14,17 @@ import {
   closeTestBooking,
   getAdminBookings,
   markBookingAsTestData,
+  resolveBookingAvailability,
 } from "../services/bookingService";
-import { createPayment, getPayment, getPaymentsByBooking, initiateStkPush, queryStkPushStatus } from "../services/paymentService";
+import {
+  createPropertyPayment,
+  getPropertyPaymentById,
+  getPropertyPayment,
+  getPropertyPaymentFees,
+  getUnlockedPropertyIds,
+  initiateStkPush,
+  queryStkPushStatus,
+} from "../services/paymentService";
 import { deleteUser, getUsers, updateUserStatus } from "../services/userService";
 import Navbar from "../components/layout/Navbar";
 import Hero from "../components/layout/Hero";
@@ -26,6 +35,11 @@ import PropertyGallery from "../components/property/PropertyGallery";
 import PropertyDetails from "../components/property/PropertyDetails";
 import AdminActivityLog from "../components/admin/AdminActivityLog";
 import PropertyActions from "../components/property/PropertyActions";
+import NotFound from "./NotFound";
+import EmptyState from "../components/common/EmptyState";
+import Modal from "../components/common/Modal";
+import Pagination from "../components/common/Pagination";
+import Toast from "../components/common/Toast";
 import "../styles/app.css";
 
 // ── MODERATION ────────────────────────────────────────────────────────────────
@@ -96,19 +110,19 @@ function PropertySkeletons() {
   </div>;
 }
 
-const SEED_ANNOUNCEMENTS = [
-  {id:"A1",title:"Welcome to HouseHunt Kenya!",body:"Kenya's most trusted property marketplace. Verified listings across 12 cities.",type:"success",date:"2024-01-15",active:true},
-  {id:"A2",title:"Mombasa listings are now live 🎉",body:"50+ verified listings on Mombasa Island and Nyali just added.",type:"info",date:"2024-02-10",active:true},
-];
-
 // ── PROP CARD COMPONENT ───────────────────────────────────────────────────────
 
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
-export default function AppShell({ initialTab = "home", authMode = null, propertyId = null }) {
-  const { user, login, register, updateUser, updateProfile, logout: logoutUser, isLoading: authLoading } = useAuth();
+export default function AppShell({ initialTab = "home", authMode = null, propertyId = null, notFound = false }) {
+  const { user, login, register, updateProfile, logout: logoutUser, isLoading: authLoading } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const tab = initialTab;
+  const setTab = nextTab => {
+    const pathByTab = { home: "/", guide: "/guide", tenant: "/tenant", landlord: "/landlord", admin: "/admin" };
+    navigate(pathByTab[nextTab] || "/");
+  };
   const [search, setSearch] = useState("");
   const [budget, setBudget] = useState("");
   const [ptype, setPtype] = useState("");
@@ -141,7 +155,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     landlordLoading,
     tenantError,
     landlordError,
-    loadTenantBookings,
     loadLandlordBookings,
     createBooking,
     cancelBooking,
@@ -149,7 +162,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     rejectBooking,
     updateBookingCompletion,
   } = useBookings();
-  const [tab, setTab] = useState(initialTab);
   const [landlords, setLandlords] = useState([]);
   const [tenants, setTenants] = useState([]);
   const [adminUsers, setAdminUsers] = useState([]);
@@ -160,24 +172,30 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
   const [adminUsersError, setAdminUsersError] = useState("");
   const [adminUserCounts, setAdminUserCounts] = useState({ total: 0, landlords: 0, tenants: 0 });
-  const [anns, setAnns] = useState(SEED_ANNOUNCEMENTS);
+  const [anns, setAnns] = useState([]);
   const [tenantAnnouncements, setTenantAnnouncements] = useState([]);
   const [announcementError, setAnnouncementError] = useState("");
+  const [paymentConfigError, setPaymentConfigError] = useState("");
+  const [unlockedPropertiesError, setUnlockedPropertiesError] = useState("");
   const [toast, setToast] = useState(null);
 
   const [selProp, setSelProp] = useState(null);
   const [midx, setMidx] = useState(0);
-  const [authModal, setAuthModal] = useState(authMode ? "tenant" : null);
+  const authRole = location.state?.role
+    || ({ "/admin": "admin", "/landlord": "landlord", "/tenant": "tenant" }[location.state?.from?.pathname])
+    || "tenant";
+  const [authModalState, setAuthModalState] = useState(null);
+  const authModal = authMode ? authRole : authModalState;
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
   const [passwordError, setPasswordError] = useState("");
   const [passwordSuccess, setPasswordSuccess] = useState("");
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [payModal, setPayModal] = useState(null);
-  const [bookingPaymentModal, setBookingPaymentModal] = useState(null);
-  const [bookingPaymentPhone, setBookingPaymentPhone] = useState("");
-  const [bookingPaymentError, setBookingPaymentError] = useState("");
-  const [bookingPaymentLoading, setBookingPaymentLoading] = useState(false);
+  const [payPhone, setPayPhone] = useState(user?.data?.phone || "");
+  const [payError, setPayError] = useState("");
+  const [unlockedPropertyAccess, setUnlockedPropertyAccess] = useState({ userId: null, ids: [] });
+  const unlockedPropertyIds = unlockedPropertyAccess.userId === user?.data?.id ? unlockedPropertyAccess.ids : [];
   const [completionLoadingId, setCompletionLoadingId] = useState("");
   const [confModal, setConfModal] = useState(null);
   const [bookingProperty, setBookingProperty] = useState(null);
@@ -194,7 +212,12 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [editingProperty, setEditingProperty] = useState(null);
   const [profileForm, setProfileForm] = useState(() => profileFields(user));
   const [cwarn, setCwarn] = useState(false);
-  const [authF, setAuthF] = useState({name:"",email:"",password:"",mode:authMode ?? "login"});
+  const [authF, setAuthF] = useState({
+    name: "",
+    email: "",
+    password: "",
+    mode: authMode === "register" && authRole === "admin" ? "login" : authMode ?? "login",
+  });
   const [authErr, setAuthErr] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [authFieldErrors, setAuthFieldErrors] = useState({});
@@ -222,46 +245,108 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const authNameRef = useRef(null);
   const authEmailRef = useRef(null);
   const authPasswordRef = useRef(null);
-  const paymentStatusCheckInFlight = useRef(false);
+  const propertyPaymentStatusCheckInFlight = useRef(false);
   const previousAuthModal = useRef(authModal);
+  const modalOpenerRef = useRef(null);
+  const mainRef = useRef(null);
+  const previousPathname = useRef(location.pathname);
+
+  const closeModal = useCallback(() => {
+    setSelProp(null);
+    if (location.pathname.startsWith("/property/")) {
+      const returnTo = location.state?.from;
+      navigate(returnTo?.pathname
+        ? { pathname: returnTo.pathname, search: returnTo.search, hash: returnTo.hash }
+        : typeof returnTo === "string" ? returnTo : "/", { replace: true });
+    }
+  }, [location.pathname, location.state, navigate]);
+
+  const setAuthModal = useCallback(nextModal => {
+    if (authMode) {
+      if (nextModal) {
+        navigate(location.pathname, { replace: true, state: { ...location.state, role: nextModal } });
+      } else {
+        navigate("/", { replace: true });
+      }
+      return;
+    }
+    setAuthModalState(nextModal);
+  }, [authMode, location.pathname, location.state, navigate]);
 
   useEffect(() => {
     if (previousAuthModal.current === authModal) return;
     previousAuthModal.current = authModal;
-    setAuthF({name:"",email:"",password:"",mode:"login"});
+    setAuthF(current => ({
+      name: "",
+      email: "",
+      password: "",
+      mode: authModal === "admin" ? "login" : authMode || (current.mode === "register" ? "register" : "login"),
+    }));
     setAuthErr("");
     setAuthNotice("");
     setAuthFieldErrors({});
     setShowPassword(false);
-  }, [authModal]);
+  }, [authModal, authMode]);
 
   useEffect(() => {
-    if (!authModal && !payModal && !confModal && !bookingPaymentModal && !passwordModalOpen) return undefined;
-    const previousFocus = document.activeElement;
+    const modalOpen = Boolean(authModal || payModal || confModal || passwordModalOpen || bookingFormOpen || selProp);
+    if (!modalOpen) {
+      modalOpenerRef.current?.focus?.();
+      modalOpenerRef.current = null;
+      return undefined;
+    }
+    if (!modalOpenerRef.current) modalOpenerRef.current = document.activeElement;
     const modal = modalRef.current;
     modal?.focus();
     const handleKeyDown = event => {
       if (event.key === "Escape") {
-        setAuthModal(null);
-        setPayModal(null);
-        setConfModal(null);
-        setBookingPaymentModal(null);
-        if (!passwordSaving) setPasswordModalOpen(false);
+        if (confModal) setConfModal(null);
+        else if (bookingFormOpen) setBookingFormOpen(false);
+        else if (authModal) setAuthModal(null);
+        else if (passwordModalOpen && !passwordSaving) setPasswordModalOpen(false);
+        else if (payModal) setPayModal(null);
+        else if (propertyId || selProp) closeModal();
       }
       if (event.key !== "Tab" || !modal) return;
       const focusable = modal.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])");
       if (!focusable.length) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
+      if (!modal.contains(document.activeElement)) { event.preventDefault(); first.focus(); return; }
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
-      previousFocus?.focus?.();
     };
-  }, [authModal, bookingPaymentModal, confModal, passwordModalOpen, passwordSaving, payModal]);
+  }, [authModal, bookingFormOpen, closeModal, confModal, passwordModalOpen, passwordSaving, payModal, propertyId, selProp, setAuthModal]);
+
+  useEffect(() => {
+    const titles = {
+      home: "Find a Home",
+      guide: "How It Works",
+      tenant: "Tenant Dashboard",
+      landlord: "Landlord Dashboard",
+      admin: "Admin Dashboard",
+    };
+    document.title = notFound
+      ? "Page Not Found | HouseHunt Kenya"
+      : propertyId && selProp
+        ? `${selProp.title} | HouseHunt Kenya`
+        : authMode
+          ? `${authMode === "register" ? "Create Account" : authMode === "reset" ? "Reset Password" : "Sign In"} | HouseHunt Kenya`
+          : `${titles[tab] || "HouseHunt Kenya"} | HouseHunt Kenya`;
+  }, [authMode, notFound, propertyId, selProp, tab]);
+
+  useEffect(() => {
+    if (previousPathname.current === location.pathname) return;
+    const previous = previousPathname.current;
+    previousPathname.current = location.pathname;
+    if (location.pathname.startsWith("/property/") || previous.startsWith("/property/")) return;
+    window.scrollTo({ top: 0, behavior: "auto" });
+    mainRef.current?.querySelector("h1")?.focus({ preventScroll: true });
+  }, [location.pathname, tab]);
 
   useEffect(() => {
     if (!propertyId) return undefined;
@@ -282,6 +367,34 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    getPropertyPaymentFees()
+      .then(fees => {
+        if (active) setSettings(current => ({ ...current, ...fees }));
+      })
+      .catch(error => {
+        if (active) setPaymentConfigError(error.response?.data?.message || error.message || "Unable to load payment pricing.");
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (user?.role !== "tenant") return undefined;
+    getUnlockedPropertyIds()
+      .then(ids => {
+        if (active) {
+          setUnlockedPropertyAccess({ userId: user.data.id, ids });
+          setUnlockedPropertiesError("");
+        }
+      })
+      .catch(error => {
+        if (active) setUnlockedPropertiesError(error.response?.data?.message || error.message || "Unable to load unlocked properties.");
+      });
+    return () => { active = false; };
+  }, [user?.role, user?.data?.id]);
 
   const clearAdminCollections = useCallback(() => {
     setAdminUsers([]);
@@ -444,13 +557,14 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const myTaken = myProps.filter(p=>p.status==="taken");
   const myBoosted = myProps.filter(p=>p.boosted);
   const myPending = myProps.filter(p=>p.approved===false);
-  const isUnlocked = id => user?.role==="tenant" && user.data.unlocked?.includes(id);
+  const isUnlocked = id => user?.role === "tenant" && unlockedPropertyIds.includes(id);
   const tenantUnlockedProps = user?.role==="tenant" ? props.filter(p=>isUnlocked(p.id)) : [];
   const unlockedRent = tenantUnlockedProps.reduce((sum,p)=>sum+p.rent,0);
   const tenantFirstName = user?.data?.name?.split(" ")[0] || "Tenant";
   const landFirstName = user?.data?.name?.split(" ")[0] || "Landlord";
   const totalAdminProperties = propertyPagination?.total ?? props.length;
   const adminPropertySetComplete = !propertyPagination || props.length >= totalAdminProperties;
+  const adminPropertyStatusReady = !propertiesLoading && !propertiesError && adminPropertySetComplete;
   const flagged = adminPropertySetComplete ? props.filter(p=>p.status === "hidden" || p.flagged) : [];
   const pending = adminPropertySetComplete ? props.filter(p=>p.approved===false) : [];
   const taken = adminPropertySetComplete ? props.filter(p=>p.status === "taken") : [];
@@ -459,11 +573,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const approved = adminPropertySetComplete ? props.filter(p=>p.approved !== false) : [];
   const adminPropertyStats = {
     total: totalAdminProperties,
-    pending: adminPropertySetComplete ? pending.length : null,
-    approved: adminPropertySetComplete ? approved.length : null,
-    occupied: adminPropertySetComplete ? taken.length : null,
-    hidden: adminPropertySetComplete ? hidden.length : null,
-    available: adminPropertySetComplete ? available.length : null,
+    pending: adminPropertyStatusReady ? pending.length : null,
+    approved: adminPropertyStatusReady ? approved.length : null,
+    occupied: adminPropertyStatusReady ? taken.length : null,
+    hidden: adminPropertyStatusReady ? hidden.length : null,
+    available: adminPropertyStatusReady ? available.length : null,
   };
 
   // AUTH
@@ -484,8 +598,12 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       });
       if (nextUser.role !== "admin") clearAdminCollections();
       setProfileForm(profileFields(nextUser));
-      setAuthModal(null);
-      setTab(nextUser.role === "admin" ? "admin" : nextUser.role === "landlord" ? "landlord" : "tenant");
+      setAuthModalState(null);
+      const requestedPath = location.state?.from;
+      const dashboardPath = { admin: "/admin", landlord: "/landlord", tenant: "/tenant" }[nextUser.role] || "/";
+      navigate(requestedPath?.pathname
+        ? { pathname: requestedPath.pathname, search: requestedPath.search, hash: requestedPath.hash }
+        : dashboardPath, { replace: true });
       msg(`Welcome back, ${nextUser.data.name.split(" ")[0]}!`, "ok");
     } catch (err) {
       setAuthErr(err.message || "Login failed.");
@@ -522,8 +640,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         setTenants(t => [...t, nextUser.data]);
       }
 
-      setAuthModal(null);
-      setTab(nextUser.role === "landlord" ? "landlord" : "tenant");
+      setAuthModalState(null);
+      navigate(nextUser.role === "landlord" ? "/landlord" : "/tenant", { replace: true });
       msg("Account created! Welcome 🎉", "ok");
     } catch (err) {
       setAuthErr(err.message || "Registration failed.");
@@ -558,14 +676,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
   const markTaken = id => {
     const p=props.find(x=>x.id===id);
-    if (user?.role !== "admin") {
-      msg("Availability changes require admin verification.", "warn");
-      return;
-    }
     const nextStatus = p?.status === "taken" ? "AVAILABLE" : "OCCUPIED";
     updatePropertyStatusApi(id, nextStatus)
       .then(() => {
-        msg(nextStatus === "AVAILABLE" ? "↩ Marked Available." : "🏠 Marked Taken.","info");
+        msg(nextStatus === "AVAILABLE" ? "Marked available." : "Marked taken.","info");
+        void refreshProperties();
       })
       .catch(error => msg(error.response?.data?.message || error.message, "err"));
   };
@@ -745,25 +860,136 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     });
   };
 
-  const simulatePay = async () => {
-    if(!payModal) return;
-    setPayLoading(true);
+  const openPropertyPayment = async ({ type, propId }) => {
+    const purpose = type === "boost" ? "LISTING_BOOST" : "CONTACT_UNLOCK";
+    setPayModal({ type, propId, paymentId: null, hasStkPush: false, status: null, amount: null, paymentLookupLoading: true });
+    setPayPhone(user?.data?.phone || "");
+    setPayError("");
     try {
-      await Promise.resolve();
-      if(payModal.type==="boost"){
-        await featurePropertyApi(payModal.propId, true);
-        msg("⭐ Listing boosted to top!","ok");
+      const pending = await getPropertyPayment(propId, purpose);
+      if (pending) {
+        setPayModal(current => current?.propId === propId && current?.type === type
+          ? {
+              ...current,
+              paymentId: pending.id,
+              hasStkPush: pending.hasStkPush,
+              status: pending.status,
+              amount: pending.amount,
+              paymentLookupLoading: false,
+            }
+          : current);
       } else {
-        const nd={...user.data,unlocked:[...(user.data.unlocked||[]),payModal.propId]};
-        updateUser({...user,data:nd});
-        setTenants(l=>l.map(t=>t.id===nd.id?nd:t));
-        msg("🔓 Contacts & location unlocked!","ok");
+        setPayModal(current => current?.propId === propId && current?.type === type
+          ? { ...current, paymentLookupLoading: false }
+          : current);
       }
-      setPayModal(null);
+    } catch (error) {
+      setPayError(error.response?.data?.message || error.message || "Unable to check for a pending payment.");
+      setPayModal(current => current?.propId === propId && current?.type === type
+        ? { ...current, paymentLookupLoading: false }
+        : current);
+    }
+  };
+
+  const handlePropertyPayment = async () => {
+    if (!payModal || !payPhone.trim()) {
+      setPayError("Enter the phone number that should receive the M-PESA prompt.");
+      return;
+    }
+    if (payModal.hasStkPush && payModal.status === "PENDING") {
+      setPayError("An M-PESA request is already active. Check its status instead of sending another prompt.");
+      return;
+    }
+
+    setPayLoading(true);
+    setPayError("");
+    try {
+      let paymentId = payModal.paymentId;
+      if (!paymentId || payModal.status === "FAILED") {
+        const payment = await createPropertyPayment({
+          purpose: payModal.type === "boost" ? "LISTING_BOOST" : "CONTACT_UNLOCK",
+          propertyId: payModal.propId,
+          currency: "KES",
+          method: "MPESA",
+          phone: payPhone.trim(),
+        });
+        paymentId = payment.id;
+        setPayModal(current => current ? {
+          ...current,
+          paymentId,
+          amount: payment.amount,
+          status: payment.status,
+          hasStkPush: payment.hasStkPush,
+        } : current);
+        if (payment.status === "PENDING" && payment.hasStkPush) {
+          setPayModal(current => current ? {
+            ...current,
+            message: "An M-PESA request is already active. Approve it on your phone or check its status.",
+          } : current);
+          return;
+        }
+      }
+
+      const result = await initiateStkPush(paymentId, payPhone.trim());
+      setPayModal(current => current ? {
+        ...current,
+        hasStkPush: true,
+        status: "PENDING",
+        message: result.responseDescription || "STK Push sent. Approve the request on your phone.",
+      } : current);
+    } catch (error) {
+      setPayError(error.response?.data?.message || error.message || "Unable to initiate M-PESA STK Push.");
     } finally {
       setPayLoading(false);
     }
   };
+
+  const refreshPropertyPaymentStatus = useCallback(async (queryDaraja = false) => {
+    if (!payModal?.paymentId || propertyPaymentStatusCheckInFlight.current) return;
+    propertyPaymentStatusCheckInFlight.current = true;
+    setPayError("");
+    try {
+      const queryResult = queryDaraja ? await queryStkPushStatus(payModal.paymentId) : null;
+      const payment = queryResult?.payment || await getPropertyPaymentById(payModal.paymentId);
+      if (payment.status === "SUCCESS") {
+        if (payment.purpose === "CONTACT_UNLOCK") {
+          setUnlockedPropertyAccess(current => {
+            const ids = current.userId === user?.data?.id ? current.ids : [];
+            return {
+              userId: user?.data?.id || null,
+              ids: ids.includes(payment.property) ? ids : [...ids, payment.property],
+            };
+          });
+        }
+        setPayModal(null);
+        msg(payment.purpose === "LISTING_BOOST"
+          ? "M-PESA payment confirmed. Your listing is boosted for 30 days."
+          : "M-PESA payment confirmed. Property contacts and full location are unlocked.", "ok");
+        try {
+          const updatedProperty = await loadProperty(payment.property);
+          if (selProp?.id === payment.property) setSelProp(updatedProperty);
+          await refreshProperties();
+        } catch (error) {
+          msg(error.response?.data?.message || error.message || "Payment was confirmed, but listing details could not be refreshed.", "err");
+        }
+      } else {
+        setPayModal(current => current ? {
+          ...current,
+          status: payment.status,
+          hasStkPush: payment.status === "FAILED" ? false : Boolean(payment.hasStkPush),
+          message: payment.status === "FAILED"
+            ? queryResult?.resultDescription || "Payment was not completed. You can try again."
+            : queryResult?.resultDescription
+              ? `Daraja reports: ${queryResult.resultDescription}. Waiting for final confirmation.`
+              : "Payment is still pending. Approve the request on your phone if it is waiting there.",
+        } : current);
+      }
+    } catch (error) {
+      setPayError(error.response?.data?.message || error.message || "Unable to refresh payment status.");
+    } finally {
+      propertyPaymentStatusCheckInFlight.current = false;
+    }
+  }, [loadProperty, payModal, refreshProperties, selProp?.id, user?.data?.id]);
 
   const openBookingForm = property => {
     if (!user || user.role !== "tenant") {
@@ -817,13 +1043,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     setBookingFormError("");
 
     try {
-      const created = await createBooking({
+      await createBooking({
         propertyId: bookingProperty.id,
         moveInDate: bookingForm.moveInDate,
         leaseMonths,
         notes: bookingForm.notes.trim(),
       });
-      msg(`Booking created. Status: ${bookingStatusLabel(created?.status || "PENDING")}.`, "ok");
+      msg("Request sent. The listing stays available until the landlord confirms an arrangement.", "ok");
       resetBookingForm();
       await refreshProperties();
     } catch (error) {
@@ -846,14 +1072,14 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const requestBookingCompletion = (booking, action) => {
     const labels = {
       REQUEST: {
-        title: "Request tenancy completion",
+        title: "Request booking completion",
         confirmLabel: "Send request",
-        message: "The other party must confirm before the booking closes and the property can be listed again.",
+        message: "The other party must confirm before this booking closes. The property stays taken until the booking is completed.",
       },
       CONFIRM: {
-        title: "Confirm tenancy completion",
+        title: "Confirm booking completion",
         confirmLabel: "Confirm completion",
-        message: "This will close the booking after mutual confirmation. Payment records remain unchanged; this does not issue a refund.",
+        message: "This closes the booking after both parties confirm. The listing is marked available again if no other confirmed booking remains.",
       },
       WITHDRAW: {
         title: "Withdraw completion request",
@@ -873,7 +1099,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         try {
           const updated = await updateBookingCompletion(booking.id, action);
           msg(updated.status === "COMPLETED"
-            ? "Tenancy completed by mutual confirmation. No refund was issued."
+            ? "Booking completed. Availability was updated if no other confirmed booking remains."
             : action === "WITHDRAW"
               ? "Completion request withdrawn."
               : "Completion request sent. The other party must confirm.");
@@ -891,7 +1117,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     if (booking.status !== "APPROVED") return null;
     const role = String(user?.role || "").toUpperCase();
     const requester = booking.completionRequestedBy;
-    const paymentPending = ["PENDING", "INITIALIZED"].includes(booking.paymentAttemptStatus);
     if (requester === role) {
       return (
         <>
@@ -908,10 +1133,9 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     }
     return (
       <>
-        {paymentPending && <span className="arow-meta">Resolve the pending payment before completing.</span>}
         <button
           className={requester ? "bapp" : "bghost"}
-          disabled={paymentPending || completionLoadingId === booking.id}
+          disabled={completionLoadingId === booking.id}
           onClick={() => requestBookingCompletion(booking, requester ? "CONFIRM" : "REQUEST")}
         >
           {completionLoadingId === booking.id
@@ -924,134 +1148,19 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     );
   };
 
-  const openBookingPayment = async booking => {
-    setBookingPaymentModal({
-      booking,
-      paymentId: null,
-      hasStkPush: false,
-      status: null,
-      message: "",
-      loadingExisting: true,
-    });
-    setBookingPaymentPhone(user?.data?.phone || "");
-    setBookingPaymentError("");
-
-    try {
-      const { payments } = await getPaymentsByBooking(booking.id, { status: "PENDING", limit: 1 });
-      const pendingPayment = payments[0];
-      setBookingPaymentModal(current => current?.booking.id === booking.id
-        ? {
-            ...current,
-            paymentId: pendingPayment?.id || null,
-            hasStkPush: Boolean(pendingPayment?.hasStkPush),
-            status: pendingPayment?.status || null,
-            loadingExisting: false,
-            message: pendingPayment?.hasStkPush
-              ? "An STK request is already in progress. Complete it on your phone, then check the status here."
-              : "",
-          }
-        : current);
-    } catch (error) {
-      setBookingPaymentError(error.message || "Unable to check for an existing payment.");
-      setBookingPaymentModal(current => current?.booking.id === booking.id
-        ? { ...current, loadingExisting: false }
-        : current);
-    }
-  };
-
-  const handleBookingPayment = async () => {
-    if (!bookingPaymentModal) return;
-    setBookingPaymentError("");
-    setBookingPaymentLoading(true);
-
-    try {
-      let paymentId = bookingPaymentModal.paymentId;
-      if (!paymentId) {
-        const payment = await createPayment({
-          bookingId: bookingPaymentModal.booking.id,
-          currency: "KES",
-          method: "MPESA",
-          phone: bookingPaymentPhone.trim(),
-        });
-        paymentId = payment.id;
-        setBookingPaymentModal(current => current
-          ? { ...current, paymentId, status: payment.status }
-          : current);
-      }
-
-      const result = await initiateStkPush(paymentId, bookingPaymentPhone.trim());
-      setBookingPaymentModal(current => current
-        ? {
-            ...current,
-            hasStkPush: true,
-            status: "PENDING",
-            message: result.responseDescription || "STK Push sent. Check your phone and approve the payment request.",
-          }
-        : current);
-    } catch (error) {
-      setBookingPaymentError(error.message || "Unable to initiate M-PESA STK Push.");
-    } finally {
-      setBookingPaymentLoading(false);
-    }
-  };
-
-  const refreshBookingPaymentStatus = useCallback(async (queryDaraja = false) => {
-    if (!bookingPaymentModal?.paymentId || paymentStatusCheckInFlight.current) return;
-    paymentStatusCheckInFlight.current = true;
-    setBookingPaymentError("");
-    setBookingPaymentLoading(true);
-    try {
-      const queryResult = queryDaraja
-        ? await queryStkPushStatus(bookingPaymentModal.paymentId)
-        : null;
-      const payment = queryResult?.payment || await getPayment(bookingPaymentModal.paymentId);
-      setBookingPaymentModal(current => current
-        ? {
-            ...current,
-            status: payment.status,
-            hasStkPush: payment.status === "FAILED" ? false : Boolean(payment.hasStkPush),
-            message: payment.status === "SUCCESS"
-              ? "Payment confirmed successfully."
-              : payment.status === "FAILED"
-                ? (queryResult?.resultCode === 1032
-                    ? "M-PESA request was cancelled. You can try again."
-                    : queryResult?.resultCode === 1037
-                      ? "No response was received on the phone. You can try again."
-                      : queryResult?.resultDescription || "Payment was not completed. You can start a new payment attempt.")
-                : queryResult?.resultDescription
-                  ? `Daraja reports: ${queryResult.resultDescription}. Waiting for final confirmation.`
-                  : "Payment is still pending. Approve the request on your phone if it is waiting there.",
-            paymentId: payment.status === "FAILED" ? null : current.paymentId,
-          }
-        : current);
-      await loadTenantBookings({ limit: 10 });
-    } catch (error) {
-      setBookingPaymentError(error.message || "Unable to refresh payment status.");
-    } finally {
-      paymentStatusCheckInFlight.current = false;
-      setBookingPaymentLoading(false);
-    }
-  }, [bookingPaymentModal, loadTenantBookings]);
-
   useEffect(() => {
-    if (
-      !bookingPaymentModal?.paymentId ||
-      !bookingPaymentModal.hasStkPush ||
-      bookingPaymentModal.status !== "PENDING"
-    ) return undefined;
-
+    if (!payModal?.paymentId || !payModal.hasStkPush || payModal.status !== "PENDING") return undefined;
     const timer = window.setInterval(() => {
-      void refreshBookingPaymentStatus();
+      void refreshPropertyPaymentStatus();
     }, 4000);
-
     return () => window.clearInterval(timer);
-  }, [bookingPaymentModal?.paymentId, bookingPaymentModal?.hasStkPush, bookingPaymentModal?.status, refreshBookingPaymentStatus]);
+  }, [payModal?.paymentId, payModal?.hasStkPush, payModal?.status, refreshPropertyPaymentStatus]);
 
   const handleApproveBooking = async bookingId => {
     setBookingConflictId("");
     try {
       await approveBooking(bookingId);
-      msg("Booking approved.", "ok");
+      msg("Request confirmed; the property is now marked taken.", "ok");
       await refreshProperties();
     } catch (error) {
       const conflictId = error.response?.data?.data?.conflictingBooking?.id;
@@ -1067,7 +1176,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     setConfModal({
       type: "test-data",
       title: "Mark this booking as test data?",
-      msg2: "This admin-only label is explicit and auditable. Paid or pending-payment bookings cannot be marked.",
+      msg2: "This admin-only label is explicit and auditable. Completed bookings cannot be marked.",
       onConfirm: async () => {
         try {
           await markBookingAsTestData(booking.id);
@@ -1082,11 +1191,33 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     });
   };
 
+  const requestResolveBooking = booking => {
+    setConfModal({
+      type: "completion",
+      title: "Resolve this booking and availability?",
+      confirmLabel: "Close booking",
+      msg2: "This admin action closes the active booking. The property is marked available only if no other confirmed booking remains. Use this after reviewing a dispute or verifying the tenancy has ended.",
+      onConfirm: async () => {
+        setConfModal(null);
+        try {
+          await resolveBookingAvailability(booking.id);
+          await Promise.all([
+            loadAdminBookings(adminBookingsPagination?.page || 1),
+            refreshProperties(),
+          ]);
+          msg("Booking resolved. Availability changed only if no other confirmed booking remains.", "ok");
+        } catch (error) {
+          msg(error.response?.data?.message || error.message || "Unable to resolve booking availability.", "err");
+        }
+      },
+    });
+  };
+
   const requestCloseTestBooking = booking => {
     setConfModal({
       type: "close-test",
       title: "Close this test booking?",
-      msg2: "The booking will be cancelled. Any paid or pending payment is protected; this action does not issue refunds.",
+      msg2: "The booking will be cancelled and the listing released if no other confirmed booking remains.",
       onConfirm: async () => {
         try {
           await closeTestBooking(booking.id);
@@ -1144,7 +1275,9 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     }
   };
 
-  const liveProp = selProp ? props.find(p=>p.id===selProp.id)||selProp : null;
+  const liveProp = propertyId && selProp && String(selProp.id) === String(propertyId)
+    ? selProp
+    : null;
   const selectedLandlord = liveProp?.landlord ? {
     name: [liveProp.landlord.firstName, liveProp.landlord.lastName].filter(Boolean).join(" "),
     email: liveProp.landlord.email,
@@ -1154,20 +1287,14 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const canManage = liveProp && (user?.role==="admin"||(user?.role==="landlord"&&liveProp.landlordId===user?.data?.id));
   const activeAnns = anns.filter(a=>a.active);
   const activeTab = tab;
-  const closeModal = () => {
-    if (location.pathname.startsWith("/property/")) {
-      const returnTo = location.state?.from || "/";
-      navigate(returnTo, { replace: true });
-    } else {
-      setSelProp(null);
-    }
-  };
-
   const openProperty = property => {
+    modalOpenerRef.current = document.activeElement;
     setSelProp(property);
     setMidx(0);
     if (!location.pathname.startsWith("/property/")) {
-      navigate(`/property/${property.id}`, { state: { from: location.pathname } });
+      navigate(`/property/${property.id}`, {
+        state: { from: { pathname: location.pathname, search: location.search, hash: location.hash } },
+      });
     }
   };
 
@@ -1183,6 +1310,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   // ── RENDER ──────────────────────────────────────────────────────────────────
   return (
     <div>
+      <a className="skip-link" href="#main-content">Skip to main content</a>
       {/* HEADER */}
       <Navbar
         tab={tab}
@@ -1198,12 +1326,21 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         }}
       />
 
+      {notFound ? (
+        <main id="main-content" ref={mainRef} className="not-found-main">
+          <NotFound />
+        </main>
+      ) : (
+      <main id="main-content" ref={mainRef}>
+      {tab !== "home" && <h1 className="sr-only" tabIndex={-1}>
+        {tab === "guide" ? "How HouseHunt Kenya Works" : tab === "tenant" ? "Find a Home" : tab === "landlord" ? "Landlord Dashboard" : "Admin Dashboard"}
+      </h1>}
       {/* ANN BAR */}
       {tenantAnnouncements.length>0 && tab!=="admin" && (
         <div className="annbar">
           {tenantAnnouncements.map(a=>(
             <div key={a.id} className={`anntag at-${a.type}`}>
-              {a.type==="success"?"🎉":a.type==="info"?"📢":"⚠️"} {a.title}: {a.body}
+              {a.type==="success" ? <Icon name="checkCircle" /> : a.type==="info" ? <Icon name="info" /> : <Icon name="alert" />} {a.title}: {a.body}
             </div>
           ))}
         </div>
@@ -1221,23 +1358,25 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
           <button type="button" className="bghost" style={{ marginLeft: "0.75rem" }} onClick={() => refreshProperties()}>Retry</button>
         </div>
       )}
+      {paymentConfigError && <div className="form-error" role="alert" style={{ margin: "1rem auto", maxWidth: 920 }}>Unable to load M-PESA pricing: {paymentConfigError}</div>}
+      {unlockedPropertiesError && user?.role === "tenant" && <div className="form-error" role="alert" style={{ margin: "1rem auto", maxWidth: 920 }}>Unable to load your unlocked properties: {unlockedPropertiesError}</div>}
       {propertyId && !propertiesLoading && !liveProp && !propertiesError && (
         <div className="page" role="alert"><div className="noresult"><h3>Property not found</h3><p>This listing is unavailable or no longer visible.</p></div></div>
       )}
 
       {/* ─── HOME ─── */}
       {activeTab==="home" && <>
-        <Hero user={user} setTab={setTab} setAuthModal={setAuthModal} unlockFee={settings.unlockFee} />
+        <Hero user={user} setTab={setTab} setAuthModal={setAuthModal} />
         <div className="statsbar">
-          <div className="stitem"><span className="stnum">{propertyPagination?.total ?? props.length}+</span><span className="stlbl">Listings</span></div>
-          <div className="stitem"><span className="stnum">{props.filter(p=>p.status==="available"&&p.approved!==false).length}</span><span className="stlbl">Available on this page</span></div>
-          <div className="stitem"><span className="stnum">—</span><span className="stlbl">Landlords</span></div>
-          <div className="stitem"><span className="stnum">12</span><span className="stlbl">Cities</span></div>
+          <div className="stitem"><span className="stnum">{propertiesLoading ? "…" : propertyPagination?.total ?? props.length}</span><span className="stlbl">Matching homes</span></div>
+          <div className="stitem"><span className="stnum">{propertiesLoading ? "…" : props.filter(p=>p.status==="available"&&p.approved!==false).length}</span><span className="stlbl">Available on this page</span></div>
+          <div className="stitem"><span className="stnum">KSh {Number(settings.unlockFee).toLocaleString()}</span><span className="stlbl">M-PESA contact unlock</span></div>
+          <div className="stitem"><span className="stnum">Free</span><span className="stlbl">To browse listings</span></div>
         </div>
         <div className="home-trust" aria-label="Why use HouseHunt Kenya">
-          <div className="trust-item"><FiCheckCircle aria-hidden="true" /><div><strong>Verified listings</strong><span>Homes reviewed before they go live</span></div></div>
-          <div className="trust-item"><FiPhone aria-hidden="true" /><div><strong>Direct landlord contact</strong><span>Connect without unnecessary middlemen</span></div></div>
-          <div className="trust-item"><FiCreditCard aria-hidden="true" /><div><strong>Secure payments</strong><span>Trusted M-PESA payment flows</span></div></div>
+          <div className="trust-item"><Icon name="checkCircle" /><div><strong>Admin-reviewed listings</strong><span>Listings marked reviewed have passed admin approval</span></div></div>
+          <div className="trust-item"><Icon name="phone" /><div><strong>Contact landlords directly</strong><span>Unlock contact details when you find a home</span></div></div>
+          <div className="trust-item"><Icon name="creditCard" /><div><strong>Pay landlords directly</strong><span>Rent and deposits are arranged between tenant and landlord</span></div></div>
         </div>
         <div className="page">
           <div className="home-search-head">
@@ -1266,7 +1405,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       {/* ─── TENANT BROWSE ─── */}
       {activeTab==="tenant" && (
         <div className="page">
-          {!user && <div className="guestbanner"><p><strong>🔓 Guest browsing.</strong> Browse homes freely. Login only when you want to unlock landlord contacts.</p><button className="bp" style={{fontSize:"0.78rem",padding:"7px 16px"}} onClick={()=>setAuthModal("tenant")}>Login / Sign Up Free</button></div>}
+          {!user && <div className="guestbanner"><p><strong><Icon name="unlock" /> Guest browsing.</strong> Browse homes freely. Login only when you want to unlock landlord contacts.</p><button className="bp" style={{fontSize:"0.78rem",padding:"7px 16px"}} onClick={()=>setAuthModal("tenant")}>Login / Sign Up Free</button></div>}
           {user && (
             <>
               <div className="thdr">
@@ -1306,7 +1445,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     {tenantUnlockedProps.map(p=>(
                       <div key={p.id} className="tunlock-card">
                         <div className="tunlock-title">{p.title}</div>
-                        <div className="tunlock-meta">📍 {p.location}</div>
+                        <div className="tunlock-meta"><Icon name="mapPin" /> {p.location}</div>
                         <div className="tunlock-short">{p.rooms} · {p.type}</div>
                         <div className="tunlock-actions">
                           <span className={`sbadge sb-${p.status==="available"?"av":"tk"}`}>{p.status==="available"?"Available":"Taken"}</span>
@@ -1319,17 +1458,17 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 </div>
               ) : (
                 <div className="tbanner">
-                  <strong>No unlocked contacts yet.</strong> Open a listing and unlock the full contact details with a one-time M-PESA payment.
+                    <strong>No unlocked contacts yet.</strong> Browse listings freely, then unlock landlord contact details with a one-time M-PESA payment.
                 </div>
               )}
 
               <div className="fcard" style={{marginTop:"1.5rem"}}>
                 <h3>My Bookings</h3>
-                <p className="sub">Requests and current booking status for your tenancy applications.</p>
-                {tenantLoading && <div className="empty-adm"><p>Loading bookings…</p></div>}
+                <p className="sub">A request records interest. The listing stays available until the landlord confirms an arrangement and marks it taken. Rent and deposits are arranged directly with the landlord.</p>
+                {tenantLoading && <EmptyState role="status">Loading bookings…</EmptyState>}
                 {!tenantLoading && tenantError && <div className="form-error" role="alert">{tenantError}</div>}
                 {!tenantLoading && !tenantError && tenantBookings.length === 0 && (
-                  <div className="empty-adm"><p>No bookings yet.</p></div>
+                  <EmptyState>No bookings yet.</EmptyState>
                 )}
                 {!tenantLoading && !tenantError && tenantBookings.length > 0 && (
                   <div style={{display:"grid",gap:"0.85rem"}}>
@@ -1339,42 +1478,22 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                         <div className="arow-info">
                           <div className="arow-title">{booking.property?.title || "Property booking"}</div>
                           <div className="arow-meta">📍 {bookingLocation(booking.property?.location) || "Location not available"} · Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
-                          <div className="booking-journey" aria-label={`Booking progress: ${bookingStatusLabel(booking.status)}, ${bookingStatusLabel(booking.paymentStatus || "UNPAID")}`}>
-                            {["Requested", "Approved", "Payment pending", "Paid"].map((step, index) => {
+                          <div className="booking-journey" aria-label={`Request status: ${bookingStatusLabel(booking.status)}`}>
+                            {["Request sent", "Landlord confirms & marks taken"].map((step, index) => {
                               const activeStep = booking.status === "PENDING" ? 0
-                                : booking.status !== "APPROVED" ? -1
-                                  : booking.paymentStatus === "PAID" ? 3
-                                    : booking.paymentAttemptStatus === "PENDING" || booking.paymentStatus === "PARTIAL" ? 2 : 1;
+                                : booking.status === "APPROVED" ? 1 : -1;
                               return <span key={step} className={index <= activeStep ? "complete" : ""}>{step}</span>;
                             })}
                           </div>
+                          {booking.status === "APPROVED" && <div className="arow-meta">The listing is marked taken. Arrange rent and any deposit directly with the landlord; HouseHunt does not collect them.</div>}
                           {["CANCELLED", "REJECTED", "COMPLETED"].includes(booking.status) && (
                             <div className="arow-meta">Journey ended: {bookingStatusLabel(booking.status)}.</div>
-                          )}
-                          {booking.status === "COMPLETED" && (
-                            <div className="arow-meta">Payment records are retained; completion does not issue a refund.</div>
                           )}
                         </div>
                         <div className="arow-acts">
                           <span className={`sbadge ${bookingStatusTone(booking.status)}`}>{bookingStatusLabel(booking.status)}</span>
-                          {booking.status === "APPROVED" && (
-                            <>
-                              <span className={`sbadge ${booking.paymentStatus === "PAID" ? "sb-av" : "sb-pd"}`}>{bookingStatusLabel(booking.paymentStatus || "UNPAID")}</span>
-                              {booking.paymentAttemptStatus === "FAILED" && <span className="arow-meta" role="status">Last payment attempt failed; retry when ready.</span>}
-                              {booking.paymentAttemptStatus === "INITIALIZED" && <span className="arow-meta" role="status">Payment is set up but no STK prompt was sent yet.</span>}
-                              {booking.paymentStatus !== "PAID" && booking.paymentAttemptStatus !== "PENDING" && (
-                                <button className="bapp" onClick={() => void openBookingPayment(booking)}>Pay with M-PESA</button>
-                              )}
-                              {booking.paymentAttemptStatus === "PENDING" && (
-                                <>
-                                  <span className="sbadge sb-pd">Payment pending</span>
-                                  <button className="bghost" onClick={() => void openBookingPayment(booking)}>Check payment status</button>
-                                </>
-                              )}
-                            </>
-                          )}
                           {renderCompletionControls(booking)}
-                          {(booking.status === "PENDING" || (booking.status === "APPROVED" && booking.paymentStatus === "UNPAID" && !["PENDING", "INITIALIZED"].includes(booking.paymentAttemptStatus))) && (
+                          {booking.status === "PENDING" && (
                             <button className="bdel" onClick={()=>handleTenantCancelBooking(booking.id)}>Cancel</button>
                           )}
                         </div>
@@ -1391,7 +1510,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
           {propertiesLoading
             ? <PropertySkeletons />
             : propertiesError
-            ? <div className="form-error" role="alert">Unable to load tenant properties: {propertiesError}</div>
+            ? <div className="form-error" role="alert">Unable to load tenant properties: {propertiesError} <button type="button" className="bghost" onClick={refreshProperties}>Retry</button></div>
             : filtered.length===0
             ? <div className="noresult"><h3>No listings found</h3><p>There are no homes matching these filters right now.</p><div className="empty-actions"><button onClick={() => { updateSearch(""); updateBudget(""); updatePropertyType(""); }}>Clear filters</button><button onClick={() => { updateSearch(""); updateBudget(""); updatePropertyType(""); setTab("home"); }}>Browse all homes</button></div></div>
             : <PropertyGrid
@@ -1407,13 +1526,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       )}
 
       {/* ─── LANDLORD DASHBOARD ─── */}
-          {activeTab==="landlord" && user?.role==="landlord" && propertiesLoading && (
+          {activeTab==="landlord" && user?.role==="landlord" && propertiesLoading && props.length===0 && (
             <div className="page"><PropertySkeletons /></div>
           )}
-          {activeTab==="landlord" && user?.role==="landlord" && propertiesError && !propertiesLoading && (
+          {activeTab==="landlord" && user?.role==="landlord" && propertiesError && !propertiesLoading && props.length===0 && (
             <div className="page"><div className="form-error" role="alert">Unable to load your listings: {propertiesError}<button type="button" className="bghost" style={{marginLeft:"0.75rem"}} onClick={refreshProperties}>Retry</button></div></div>
           )}
-          {activeTab==="landlord" && user?.role==="landlord" && !propertiesLoading && !propertiesError && (
+          {activeTab==="landlord" && user?.role==="landlord" && (!propertiesLoading || props.length>0) && (!propertiesError || props.length>0) && (
         <div className="page">
           <div className="sh"><div className="shey">Property Owner</div><div className="shtt">Landlord Dashboard</div></div>
           <div className="ldashboard-top">
@@ -1448,10 +1567,10 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 </button>
               </div>
             )}
-            {landlordLoading && <div className="empty-adm"><p>Loading booking requests…</p></div>}
+            {landlordLoading && <EmptyState role="status">Loading booking requests…</EmptyState>}
             {!landlordLoading && landlordError && <div className="form-error" role="alert">{landlordError}</div>}
             {!landlordLoading && !landlordError && landlordBookings.length === 0 && (
-              <div className="empty-adm"><p>No booking requests yet.</p></div>
+              <EmptyState>No booking requests yet.</EmptyState>
             )}
             {!landlordLoading && !landlordError && landlordBookings.length > 0 && (
               <div style={{display:"grid",gap:"0.85rem"}}>
@@ -1460,51 +1579,38 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     <div className="arow-icon" style={{background:"#2D5016"}}>{(booking.tenant?.firstName || booking.tenant?.name || "T").slice(0,1).toUpperCase()}</div>
                     <div className="arow-info">
                       <div className="arow-title">{booking.tenant?.firstName && booking.tenant?.lastName ? `${booking.tenant.firstName} ${booking.tenant.lastName}` : booking.tenant?.name || "Tenant"} · {booking.property?.title || "Property"}</div>
-                      <div className="arow-meta">📍 {bookingLocation(booking.property?.location) || "Location not available"} · Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
-                      {booking.notes && <div className="arow-meta">📝 {booking.notes}</div>}
+                      <div className="arow-meta"><Icon name="mapPin" /> {bookingLocation(booking.property?.location) || "Location not available"} · Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
+                      {booking.notes && <div className="arow-meta"><Icon name="briefcase" /> {booking.notes}</div>}
                     </div>
                     <div className="arow-acts">
                       <span className={`sbadge ${bookingStatusTone(booking.status)}`}>{bookingStatusLabel(booking.status)}</span>
                       {booking.status === "PENDING" && (
                         <>
-                          <button className="bapp" onClick={()=>handleApproveBooking(booking.id)}>Approve</button>
+                          <button className="bapp" onClick={()=>handleApproveBooking(booking.id)}>Confirm rented · mark taken</button>
                           <button className="bdel" onClick={()=>handleRejectBooking(booking.id)}>Reject</button>
                         </>
                       )}
                       {booking.status === "APPROVED" && (
                         <>
-                          <span className={`sbadge ${booking.paymentStatus === "PAID" ? "sb-av" : "sb-pd"}`}>{bookingStatusLabel(booking.paymentStatus || "UNPAID")}</span>
                           {renderCompletionControls(booking)}
                         </>
                       )}
                       {booking.status === "COMPLETED" && (
-                        <span className="arow-meta">Payment records retained; no refund issued.</span>
+                        <span className="arow-meta">Booking closed. Mark the listing available when it is vacant.</span>
                       )}
                     </div>
                   </div>
                 ))}
-                {landlordBookingsPagination && landlordBookingsPagination.totalPages > 1 && (
-                  <div className="arow-acts" style={{justifyContent:"space-between",marginTop:"1rem"}}>
-                    <button
-                      className="bghost"
-                      disabled={!landlordBookingsPagination.hasPrevPage || landlordLoading}
-                      onClick={() => void loadLandlordBookings({ page: landlordBookingsPagination.page - 1 })}
-                    >
-                      Previous
-                    </button>
-                    <span className="arow-meta">
-                      Page {landlordBookingsPagination.page} of {landlordBookingsPagination.totalPages}
-                      {" · "}{landlordBookingsPagination.total} bookings
-                    </span>
-                    <button
-                      className="bghost"
-                      disabled={!landlordBookingsPagination.hasNextPage || landlordLoading}
-                      onClick={() => void loadLandlordBookings({ page: landlordBookingsPagination.page + 1 })}
-                    >
-                      Next
-                    </button>
-                  </div>
-                )}
+                <Pagination
+                  pagination={landlordBookingsPagination}
+                  loading={landlordLoading}
+                  onPageChange={page => void loadLandlordBookings({ page })}
+                  ariaLabel="Booking request pages"
+                  totalLabel="bookings"
+                  className="arow-acts"
+                  summaryClassName="arow-meta"
+                  style={{justifyContent:"space-between",marginTop:"1rem"}}
+                />
               </div>
             )}
           </div>
@@ -1515,74 +1621,78 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 <div className="duname">{user.data.name}</div>
                 <div className="durole">Property Owner</div>
               </div>
-              <div className="dsnav">
+              <nav className="dsnav" aria-label="Landlord dashboard">
                 {[["profile","👤","My Profile"],["social","📱","Contact & Socials"],["media","🖼️","Upload Media"],["listing","🏠","Add Listing"],["mylistings","📋","My Listings"]].map(([k,ic,lb])=>(
-                  <button key={k} className={`snb${ldTab===k?" on":""}`} onClick={()=>setLdTab(k)}>
+                  <button key={k} type="button" className={`snb${ldTab===k?" on":""}`} aria-current={ldTab===k?"page":undefined} onClick={()=>setLdTab(k)}>
                     <span className="snbi">{ic}</span>{lb}
                     {k==="mylistings"&&myProps.length>0&&<span className="snbc">{myProps.length}</span>}
                   </button>
                 ))}
-              </div>
+              </nav>
             </div>
             <div>
-              {ldTab==="profile" && <div className="fcard">
+              {ldTab==="profile" && <form className="fcard" onSubmit={event=>{event.preventDefault();void saveProfile();}}>
                 <h3>My Profile</h3><p className="sub">Your public display name on all listings.</p>
                 <div className="frow">
-                  <div className="fg"><label>First Name</label><input value={profileForm.firstName} onChange={e=>setProfileForm({...profileForm,firstName:e.target.value})} disabled={profileSaving} /></div>
-                  <div className="fg"><label>Last Name</label><input value={profileForm.lastName} onChange={e=>setProfileForm({...profileForm,lastName:e.target.value})} disabled={profileSaving} /></div>
+                  <div className="fg"><label htmlFor="profile-first-name">First Name</label><input id="profile-first-name" value={profileForm.firstName} onChange={e=>setProfileForm({...profileForm,firstName:e.target.value})} disabled={profileSaving} /></div>
+                  <div className="fg"><label htmlFor="profile-last-name">Last Name</label><input id="profile-last-name" value={profileForm.lastName} onChange={e=>setProfileForm({...profileForm,lastName:e.target.value})} disabled={profileSaving} /></div>
                 </div>
-                <div className="fg"><label>Phone</label><input value={profileForm.phone} onChange={e=>setProfileForm({...profileForm,phone:e.target.value})} disabled={profileSaving} /></div>
-                <button className="bp" onClick={saveProfile} disabled={profileSaving} aria-busy={profileSaving}>{profileSaving ? "Saving profile…" : "Save Profile →"}</button>
-              </div>}
+                <div className="fg"><label htmlFor="profile-phone">Phone</label><input id="profile-phone" value={profileForm.phone} onChange={e=>setProfileForm({...profileForm,phone:e.target.value})} disabled={profileSaving} /></div>
+                <button type="submit" className="bp" disabled={profileSaving} aria-busy={profileSaving}>{profileSaving ? "Saving profile…" : "Save Profile →"}</button>
+              </form>}
 
               {adTab==="test-bookings" && <div className="atab">
-                <h3>Test booking cleanup</h3>
-                <p className="sub">Only bookings explicitly marked by an administrator can be cleaned up. Paid or pending payments are never reversed here.</p>
+                <h3>Booking & availability administration</h3>
+                <p className="sub">Requests do not reserve a property. A landlord confirmation marks it taken; rent and deposits stay between landlord and tenant. Resolve disputed availability here when needed.</p>
                 <button className="bghost" type="button" onClick={() => void loadAdminBookings(adminBookingsPagination?.page || 1)} disabled={adminBookingsLoading}>
                   {adminBookingsLoading ? "Loading…" : "Refresh bookings"}
                 </button>
                 {adminBookingsError && <div className="form-error" role="alert">{adminBookingsError}</div>}
-                {adminBookingsLoading && <div className="empty-adm"><p>Loading bookings…</p></div>}
-                {!adminBookingsLoading && !adminBookingsError && adminBookings.length === 0 && <div className="empty-adm"><p>No bookings found.</p></div>}
+                {adminBookingsLoading && <EmptyState role="status">Loading bookings…</EmptyState>}
+                {!adminBookingsLoading && !adminBookingsError && adminBookings.length === 0 && <EmptyState>No bookings found.</EmptyState>}
                 {!adminBookingsLoading && adminBookings.map(booking => (
                   <div key={booking.id} className="arow">
                     <div className="arow-info">
                       <div className="arow-title">{booking.property?.title || "Property booking"}</div>
-                      <div className="arow-meta">Booking {booking.id} · {bookingStatusLabel(booking.status)} · {bookingStatusLabel(booking.paymentStatus || "UNPAID")}</div>
+                      <div className="arow-meta">Booking {booking.id} · {bookingStatusLabel(booking.status)}</div>
                       {booking.isTestData && <div className="arow-meta">Explicitly marked as test data</div>}
                     </div>
                     <div className="arow-acts">
+                      {booking.status === "APPROVED" && <button className="bban" onClick={() => requestResolveBooking(booking)}>Resolve booking</button>}
                       {booking.isTestData
                         ? <button className="bdel" disabled={booking.status !== "PENDING" && booking.status !== "APPROVED"} onClick={() => requestCloseTestBooking(booking)}>Close test booking</button>
-                        : <button className="bapp" disabled={booking.status === "COMPLETED" || booking.paymentStatus !== "UNPAID" || Number(booking.amountPaid || 0) > 0 || ["PENDING", "INITIALIZED"].includes(booking.paymentAttemptStatus)} onClick={() => requestMarkTestBooking(booking)}>Mark as test data</button>}
+                        : <button className="bapp" disabled={booking.status === "COMPLETED"} onClick={() => requestMarkTestBooking(booking)}>Mark as test data</button>}
                     </div>
                   </div>
                 ))}
-                {adminBookingsPagination && adminBookingsPagination.totalPages > 1 && (
-                  <div className="arow-acts" style={{justifyContent:"space-between",marginTop:"1rem"}}>
-                    <button className="bghost" disabled={!adminBookingsPagination.hasPrevPage || adminBookingsLoading} onClick={() => void loadAdminBookings(adminBookingsPagination.page - 1)}>Previous</button>
-                    <span className="arow-meta">Page {adminBookingsPagination.page} of {adminBookingsPagination.totalPages}</span>
-                    <button className="bghost" disabled={!adminBookingsPagination.hasNextPage || adminBookingsLoading} onClick={() => void loadAdminBookings(adminBookingsPagination.page + 1)}>Next</button>
-                  </div>
-                )}
+                <Pagination
+                  pagination={adminBookingsPagination}
+                  loading={adminBookingsLoading}
+                  onPageChange={page => void loadAdminBookings(page)}
+                  ariaLabel="Booking pages"
+                  totalLabel="bookings"
+                  className="arow-acts"
+                  summaryClassName="arow-meta"
+                  style={{justifyContent:"space-between",marginTop:"1rem"}}
+                />
               </div>}
 
-              {ldTab==="social" && <div className="fcard">
+              {ldTab==="social" && <form className="fcard" onSubmit={event=>{event.preventDefault();void saveProfile();}}>
                 <h3>Contact & Social Media</h3><p className="sub">Shown on listings so tenants can reach you directly.</p>
                 <div className="divlbl"><span>📞 Phone Numbers</span></div>
                 <div className="frow">
-                  <div className="fg"><label>Primary Phone</label><div className="inpw"><span className="inpx">🇰🇪</span><input placeholder="e.g. +254 700 000 000" value={profileForm.phone} onChange={e=>setProfileForm({...profileForm,phone:e.target.value})} /></div></div>
-                  <div className="fg"><label>WhatsApp <small>(not persisted yet)</small></label><div className="inpw"><span className="inpx">💬</span><input placeholder="Not available" value={user.data.whatsapp||""} readOnly /></div></div>
+                  <div className="fg"><label htmlFor="social-phone">Primary Phone</label><div className="inpw"><span className="inpx">🇰🇪</span><input id="social-phone" placeholder="e.g. +254 700 000 000" value={profileForm.phone} onChange={e=>setProfileForm({...profileForm,phone:e.target.value})} /></div></div>
+                  <div className="fg"><label htmlFor="social-whatsapp">WhatsApp <small>(not persisted yet)</small></label><div className="inpw"><span className="inpx">💬</span><input id="social-whatsapp" placeholder="Not available" value={user.data.whatsapp||""} readOnly /></div></div>
                 </div>
-                <div className="fg"><label>Email <small>(account email)</small></label><div className="inpw"><span className="inpx">✉️</span><input type="email" value={user.data.email||""} readOnly /></div></div>
+                <div className="fg"><label htmlFor="social-email">Email <small>(account email)</small></label><div className="inpw"><span className="inpx">✉️</span><input id="social-email" type="email" value={user.data.email||""} readOnly /></div></div>
                 <div className="divlbl"><span>📱 Social Media <small>(not persisted yet)</small></span></div>
                 <div className="frow">
-                  <div className="fg"><label>Instagram</label><div className="inpw"><span className="inpx">📸 @</span><input placeholder="Not available" value={user.data.ig||""} readOnly /></div></div>
-                  <div className="fg"><label>Facebook</label><div className="inpw"><span className="inpx">👍</span><input placeholder="Not available" value={user.data.fb||""} readOnly /></div></div>
+                  <div className="fg"><label htmlFor="social-instagram">Instagram</label><div className="inpw"><span className="inpx">📸 @</span><input id="social-instagram" placeholder="Not available" value={user.data.ig||""} readOnly /></div></div>
+                  <div className="fg"><label htmlFor="social-facebook">Facebook</label><div className="inpw"><span className="inpx">👍</span><input id="social-facebook" placeholder="Not available" value={user.data.fb||""} readOnly /></div></div>
                 </div>
                 <div className="frow">
-                  <div className="fg"><label>TikTok</label><div className="inpw"><span className="inpx">🎵 @</span><input placeholder="Not available" value={user.data.tt||""} readOnly /></div></div>
-                  <div className="fg"><label>X / Twitter</label><div className="inpw"><span className="inpx">𝕏 @</span><input placeholder="Not available" value={user.data.tw||""} readOnly /></div></div>
+                  <div className="fg"><label htmlFor="social-tiktok">TikTok</label><div className="inpw"><span className="inpx">🎵 @</span><input id="social-tiktok" placeholder="Not available" value={user.data.tt||""} readOnly /></div></div>
+                  <div className="fg"><label htmlFor="social-twitter">X / Twitter</label><div className="inpw"><span className="inpx">𝕏 @</span><input id="social-twitter" placeholder="Not available" value={user.data.tw||""} readOnly /></div></div>
                 </div>
                 {(user.data.phone||user.data.ig) && <div className="pprev"><h4>Live Preview</h4>
                   <div className="cchips">
@@ -1597,14 +1707,23 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     {user.data.tw&&<span className="sc sc-tw">𝕏 @{user.data.tw}</span>}
                   </div>
                 </div>}
-                <button className="bp" onClick={saveProfile}>Save Phone →</button>
-              </div>}
+                <button type="submit" className="bp">Save Phone →</button>
+              </form>}
 
               {ldTab==="media" && <div className="fcard">
                 <h3>Upload Photos & Videos</h3><p className="sub">Attached automatically to your next listing.</p>
                 <input ref={fileRef} type="file" accept="image/*,video/*" multiple style={{display:"none"}} onChange={e=>handleFiles(e.target.files)}/>
                 <div className={`upzone${dragOv?" ov":""}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Choose photos and videos to upload"
                   onClick={()=>fileRef.current.click()}
+                  onKeyDown={event => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      fileRef.current.click();
+                    }
+                  }}
                   onDragOver={e=>{e.preventDefault();setDragOv(true);}}
                   onDragLeave={()=>setDragOv(false)}
                   onDrop={e=>{e.preventDefault();setDragOv(false);handleFiles(e.dataTransfer.files);}}>
@@ -1614,44 +1733,44 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 {pendMedia.length>0 && <>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"1rem"}}>
                     <p style={{fontWeight:600,fontSize:"0.84rem"}}>{pendMedia.length} file{pendMedia.length>1?"s":""} ready</p>
-                    <button style={{background:"none",border:"none",color:"#dc2626",cursor:"pointer",fontSize:"0.74rem",fontWeight:700,fontFamily:"Inter,sans-serif"}} onClick={()=>setPendMedia([])}>Clear all</button>
+                    <button type="button" style={{background:"none",border:"none",color:"#dc2626",cursor:"pointer",fontSize:"0.74rem",fontWeight:700,fontFamily:"Inter,sans-serif"}} onClick={()=>setPendMedia([])}>Clear all</button>
                   </div>
                   <div className="mgrid">{pendMedia.map((m,i)=>(
                     <div key={i} className="mitem">
                       {m.type==="image"?<img src={m.url} alt=""/>:<video src={m.url} muted loop/>}
-                      <button className="mrm" onClick={()=>setPendMedia(l=>l.filter((_,j)=>j!==i))}>✕</button>
+                      <button type="button" className="mrm" aria-label={`Remove uploaded media ${i + 1}`} onClick={()=>setPendMedia(l=>l.filter((_,j)=>j!==i))}>✕</button>
                       <span className="mtlbl">{m.type==="video"?"🎬":"📸"}</span>
                     </div>
                   ))}</div>
                 </>}
               </div>}
 
-              {ldTab==="listing" && <div className="fcard">
+              {ldTab==="listing" && <form className="fcard" onSubmit={event=>{event.preventDefault();void addProp();}}>
                 <h3>{editingProperty ? "Edit Listing" : "Add New Listing"}</h3>
                 <p className="sub">Free to post. New listings are reviewed before going live. {pendMedia.length>0 && `${pendMedia.length} media file(s) ready.`}</p>
                 {formError && <div className="form-error" role="alert">{formError}</div>}
                 {cwarn && <div className="cwarn"><p>⚠️ Your content contains inappropriate language. Please revise before submitting.</p></div>}
                 <div className="frow">
-                  <div className={`fg${formInvalid.title?" invalid":""}`}><label>Property Title *</label><input placeholder="e.g. 2 Bedroom in Westlands" value={form.title} onChange={e=>{setForm({...form,title:e.target.value});setCwarn(false);setFormInvalid({...formInvalid,title:false});setFormError("");}} disabled={propLoading}/></div>
-                  <div className={`fg${formInvalid.location?" invalid":""}`}><label>Location *</label><input placeholder="Westlands, Nairobi" value={form.location} onChange={e=>{setForm({...form,location:e.target.value});setFormInvalid({...formInvalid,location:false});setFormError("");}} disabled={propLoading}/></div>
+                  <div className={`fg${formInvalid.title?" invalid":""}`}><label htmlFor="listing-title">Property Title *</label><input id="listing-title" placeholder="e.g. 2 Bedroom in Westlands" value={form.title} onChange={e=>{setForm({...form,title:e.target.value});setCwarn(false);setFormInvalid({...formInvalid,title:false});setFormError("");}} disabled={propLoading} aria-invalid={Boolean(formInvalid.title)}/></div>
+                  <div className={`fg${formInvalid.location?" invalid":""}`}><label htmlFor="listing-location">Location *</label><input id="listing-location" placeholder="Westlands, Nairobi" value={form.location} onChange={e=>{setForm({...form,location:e.target.value});setFormInvalid({...formInvalid,location:false});setFormError("");}} disabled={propLoading} aria-invalid={Boolean(formInvalid.location)}/></div>
                 </div>
                 <div className="frow">
-                  <div className={`fg${formInvalid.rent?" invalid":""}`}><label>Monthly Rent (KES) *</label><input type="number" placeholder="25000" value={form.rent} onChange={e=>{setForm({...form,rent:e.target.value});setFormInvalid({...formInvalid,rent:false});setFormError("");}} disabled={propLoading}/></div>
-                  <div className="fg"><label>Property Type</label><select value={form.type} onChange={e=>setForm({...form,type:e.target.value})} disabled={propLoading}>{["Bedsitter","Room","Apartment","House","Penthouse"].map(t=><option key={t}>{t}</option>)}</select></div>
+                  <div className={`fg${formInvalid.rent?" invalid":""}`}><label htmlFor="listing-rent">Monthly Rent (KES) *</label><input id="listing-rent" type="number" placeholder="25000" value={form.rent} onChange={e=>{setForm({...form,rent:e.target.value});setFormInvalid({...formInvalid,rent:false});setFormError("");}} disabled={propLoading} aria-invalid={Boolean(formInvalid.rent)}/></div>
+                  <div className="fg"><label htmlFor="listing-type">Property Type</label><select id="listing-type" value={form.type} onChange={e=>setForm({...form,type:e.target.value})} disabled={propLoading}>{["Bedsitter","Room","Apartment","House","Penthouse"].map(t=><option key={t}>{t}</option>)}</select></div>
                 </div>
-                <div className="fg"><label>Bedrooms & Facilities</label><input placeholder="2 Bed · 1 Bath · DSQ" value={form.rooms} onChange={e=>setForm({...form,rooms:e.target.value})} disabled={propLoading}/></div>
-                <div className="fg"><label>Amenity Tags (comma-separated)</label><input placeholder="WiFi, Parking, Security" value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})} disabled={propLoading}/></div>
-                <div className="fg"><label>House Rules</label><textarea placeholder="No pets. 2 months deposit." value={form.rules} onChange={e=>{setForm({...form,rules:e.target.value});setCwarn(false);}} disabled={propLoading}/></div>
+                <div className="fg"><label htmlFor="listing-rooms">Bedrooms & Facilities</label><input id="listing-rooms" placeholder="2 Bed · 1 Bath · DSQ" value={form.rooms} onChange={e=>setForm({...form,rooms:e.target.value})} disabled={propLoading}/></div>
+                <div className="fg"><label htmlFor="listing-tags">Amenity Tags (comma-separated)</label><input id="listing-tags" placeholder="WiFi, Parking, Security" value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})} disabled={propLoading}/></div>
+                <div className="fg"><label htmlFor="listing-rules">House Rules</label><textarea id="listing-rules" placeholder="No pets. 2 months deposit." value={form.rules} onChange={e=>{setForm({...form,rules:e.target.value});setCwarn(false);}} disabled={propLoading}/></div>
                 {pendMedia.length>0 && <div style={{display:"flex",gap:6,marginBottom:"1rem",flexWrap:"wrap"}}>{pendMedia.slice(0,5).map((m,i)=>(
                   <div key={i} style={{width:50,height:38,borderRadius:6,overflow:"hidden",border:"1px solid rgba(181,69,27,0.18)"}}>
                     {m.type==="image"?<img src={m.url} style={{width:"100%",height:"100%",objectFit:"cover"}} alt=""/>:<video src={m.url} style={{width:"100%",height:"100%",objectFit:"cover"}} muted/>}
                   </div>
                 ))}{pendMedia.length>5&&<div style={{width:50,height:38,borderRadius:6,background:"rgba(10,10,24,0.07)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.68rem",color:"#bbb"}}>+{pendMedia.length-5}</div>}</div>}
                 <div style={{display:"flex",gap:8}}>
-                  <button className="bp" style={{flex:1,padding:"12px"}} onClick={addProp} disabled={propLoading} aria-busy={propLoading}>{propLoading ? "Saving…" : editingProperty ? "Save Listing →" : "Post Listing Free →"}</button>
-                  {editingProperty && <button className="bghost" onClick={()=>{setEditingProperty(null);setForm({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});setPendMedia([]);}} disabled={propLoading}>Cancel</button>}
+                  <button type="submit" className="bp" style={{flex:1,padding:"12px"}} disabled={propLoading} aria-busy={propLoading}>{propLoading ? "Saving…" : editingProperty ? "Save Listing →" : "Post Listing Free →"}</button>
+                  {editingProperty && <button type="button" className="bghost" onClick={()=>{setEditingProperty(null);setForm({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});setPendMedia([]);}} disabled={propLoading}>Cancel</button>}
                 </div>
-              </div>}
+              </form>}
 
               {ldTab==="mylistings" && <div className="fcard">
                 <h3>My Listings</h3><p className="sub">{myProps.length} listing{myProps.length!==1?"s":""}.</p>
@@ -1670,8 +1789,9 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                         {p.boosted && <span className="sbadge sb-bo">⭐ Boosted</span>}
                       </div>
                       <div className="lrent">{KES(p.rent)}</div>
+                      {p.approved && p.status === "available" && !p.boosted && <button type="button" className="bboost" onClick={() => void openPropertyPayment({ type: "boost", propId: p.id })}>Boost listing · KSh {settings.boostFee}</button>}
                       <button className="bghost" onClick={()=>beginEditProperty(p)}>Edit</button>
-                      <button className="bdel" onClick={()=>deleteProp(p.id)}>🗑</button>
+                      <button className="bdel" aria-label={`Delete listing: ${p.title}`} onClick={()=>deleteProp(p.id)}>🗑</button>
                     </div>
                   </div>
                 ))}
@@ -1695,8 +1815,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               <div className="atb-title">HouseHunt Kenya — Admin Control Centre</div>
               <div className="atb-sub">Full control over listings, users, content & site settings.</div>
               <div className="admin-topbar-summary">
-                <span className="admin-pill">{adminPropertyStats.total} Listings</span>
-                <span className="admin-pill">{adminUserCounts.total} Users</span>
+                <span className="admin-pill">{propertiesLoading || propertiesError ? "—" : adminPropertyStats.total} Listings</span>
+                <span className="admin-pill">{adminUsersLoading ? "—" : adminUserCounts.total} Users</span>
                 <span className="admin-pill">{adminPropertyStats.pending ?? "—"} Pending</span>
                 <span className="admin-pill">{adminPropertyStats.hidden ?? "—"} Hidden</span>
               </div>
@@ -1710,26 +1830,26 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                   <div className="duname" style={{color:"#C4991A"}}>Administrator</div>
                   <div className="durole adm">Super Admin · Full Access</div>
                 </div>
-                <div className="dsnav">
+                <nav className="dsnav" aria-label="Admin dashboard">
                   {[
                     ["overview","📊","Overview"],
-                    ["listings","🏠","All Listings",adminPropertyStats.total],
-                    ["flagged","🚩","Flagged",flagged.length],
-                    ["pending","⏳","Pending",pending.length],
-                    ["verify","✅","Verify Taken",taken.length],
+                    ["listings","🏠","All Listings",propertiesLoading || propertiesError ? null : adminPropertyStats.total],
+                    ["flagged","🚩","Flagged",adminPropertyStatusReady ? flagged.length : null],
+                    ["pending","⏳","Pending",adminPropertyStatusReady ? pending.length : null],
+                    ["verify","✅","Verify Taken",adminPropertyStatusReady ? taken.length : null],
                     ["test-bookings","🧹","Test Bookings"],
-                    ["users","👥","Users",adminUserCounts.total],
+                    ["users","👥","Users",adminUsersLoading ? null : adminUserCounts.total],
                     ["announce","📢","Announcements",activeAnns.length],
                     ["post","➕","Post New Listing"],
                     ["settings","⚙️","Site Settings"],
                     ["activity","📋","Activity Log"],
                   ].map(([k,ic,lb,cnt])=>(
-                    <button key={k} className={`snb${adTab===k?" on":""}`} onClick={()=>setAdTab(k)}>
+                    <button key={k} type="button" className={`snb${adTab===k?" on":""}`} aria-current={adTab===k?"page":undefined} onClick={()=>setAdTab(k)}>
                       <span className="snbi">{ic}</span>{lb}
-                      {cnt>0 && <span className="snbc">{cnt}</span>}
+                      {cnt != null && <span className="snbc">{cnt}</span>}
                     </button>
                   ))}
-                </div>
+                </nav>
               </div>
 
               <div>
@@ -1739,18 +1859,18 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                   <div className="admin-summary-grid">
                     <div className="admin-summary-card">
                       <div className="admin-card-title">Platform health</div>
-                      <div className="admin-card-value">{adminPropertyStats.total} listings</div>
-                      <div className="admin-card-meta">{adminPropertyStats.pending ?? "—"} pending review · {adminPropertyStats.hidden ?? "—"} hidden</div>
+                      <div className="admin-card-value">{propertiesLoading ? "Loading…" : `${adminPropertyStats.total} listings`}</div>
+                      <div className="admin-card-meta">{propertiesLoading ? "Loading listing status…" : `${adminPropertyStats.pending ?? "—"} pending review · ${adminPropertyStats.hidden ?? "—"} hidden`}</div>
                     </div>
                     <div className="admin-summary-card">
                       <div className="admin-card-title">User base</div>
-                      <div className="admin-card-value">{adminUserCounts.total} users</div>
-                      <div className="admin-card-meta">{adminUserCounts.landlords} landlords · {adminUserCounts.tenants} tenants</div>
+                      <div className="admin-card-value">{adminUsersLoading ? "Loading…" : `${adminUserCounts.total} users`}</div>
+                      <div className="admin-card-meta">{adminUsersLoading ? "Loading user counts…" : `${adminUserCounts.landlords} landlords · ${adminUserCounts.tenants} tenants`}</div>
                     </div>
                     <div className="admin-summary-card">
                       <div className="admin-card-title">Content trust</div>
                       <div className="admin-card-value">{activeAnns.length} announcements</div>
-                      <div className="admin-card-meta">{taken.length} taken units need verification</div>
+                      <div className="admin-card-meta">{adminPropertyStatusReady ? `${taken.length} taken units need verification` : "Listing status is loading"}</div>
                     </div>
                   </div>
                   <div className="admin-quick-actions">
@@ -1759,13 +1879,13 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     <button className="bban" onClick={()=>setAdTab("flagged")}>🚩 Review Flagged</button>
                   </div>
                   <div className="akpis">
-                    <div className="akpi"><div className="akpi-icon">🏠</div><div className="akpi-val">{adminPropertyStats.total}</div><div className="akpi-lbl">Total Listings</div></div>
+                    <div className="akpi"><div className="akpi-icon">🏠</div><div className="akpi-val">{propertiesLoading ? "—" : adminPropertyStats.total}</div><div className="akpi-lbl">Total Listings</div></div>
                     <div className="akpi"><div className="akpi-icon">✓</div><div className="akpi-val grn">{adminPropertyStats.available ?? "—"}</div><div className="akpi-lbl">Available</div></div>
                     <div className="akpi"><div className="akpi-icon">⊘</div><div className="akpi-val red">{adminPropertyStats.occupied ?? "—"}</div><div className="akpi-lbl">Taken</div></div>
-                    <div className="akpi"><div className="akpi-icon">⭐</div><div className="akpi-val">{props.filter(p=>p.boosted).length}</div><div className="akpi-lbl">Boosted</div></div>
+                    <div className="akpi"><div className="akpi-icon">⭐</div><div className="akpi-val">{propertiesLoading || propertiesError ? "—" : props.filter(p=>p.boosted).length}</div><div className="akpi-lbl">Boosted</div></div>
                     <div className="akpi"><div className="akpi-icon">🚩</div><div className="akpi-val red">{adminPropertyStats.hidden ?? "—"}</div><div className="akpi-lbl">Hidden</div></div>
-                    <div className="akpi"><div className="akpi-icon">👷</div><div className="akpi-val blu">{adminUserCounts.landlords}</div><div className="akpi-lbl">Landlords</div></div>
-                    <div className="akpi"><div className="akpi-icon">👤</div><div className="akpi-val blu">{adminUserCounts.tenants}</div><div className="akpi-lbl">Tenants</div></div>
+                    <div className="akpi"><div className="akpi-icon">👷</div><div className="akpi-val blu">{adminUsersLoading ? "—" : adminUserCounts.landlords}</div><div className="akpi-lbl">Landlords</div></div>
+                    <div className="akpi"><div className="akpi-icon">👤</div><div className="akpi-val blu">{adminUsersLoading ? "—" : adminUserCounts.tenants}</div><div className="akpi-lbl">Tenants</div></div>
                     <div className="akpi"><div className="akpi-icon">📢</div><div className="akpi-val">{activeAnns.length}</div><div className="akpi-lbl">Announcements</div></div>
                   </div>
                 </div>}
@@ -1773,7 +1893,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 {/* ALL LISTINGS */}
                 {adTab==="listings" && <div className="atab">
                   <h3>All Listings</h3><p className="sub">Approve, flag, or delete any listing on the platform.</p>
-                  {props.length===0 && <div className="empty-adm"><p>No listings yet.</p></div>}
+                  {propertiesLoading && <EmptyState role="status">Loading listings…</EmptyState>}
+                  {adminPropertyStatusReady && props.length===0 && <EmptyState>No listings yet.</EmptyState>}
                   {props.map(p=>(
                     <div key={p.id} className="arow">
                       <div className="arow-icon" style={{background:p.color}}>{p.initials}</div>
@@ -1798,7 +1919,9 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 {/* FLAGGED */}
                 {adTab==="flagged" && <div className="atab">
                   <h3>Flagged Content</h3><p className="sub">Listings detected or manually flagged for inappropriate content.</p>
-                  {flagged.length===0 && <div className="empty-adm"><p>✅ No flagged content. Platform is clean.</p></div>}
+                  {propertiesLoading && <EmptyState role="status">Loading listings…</EmptyState>}
+                  {!propertiesLoading && !propertiesError && !adminPropertySetComplete && <EmptyState role="status">Some listings are still loading. Flagged status cannot be confirmed yet.</EmptyState>}
+                  {adminPropertyStatusReady && flagged.length===0 && <EmptyState>✅ No flagged content. Platform is clean.</EmptyState>}
                   {flagged.map(p=>(
                     <div key={p.id} className="arow" style={{borderLeft:"3px solid #dc2626"}}>
                       <div className="arow-icon" style={{background:p.color}}>{p.initials}</div>
@@ -1815,7 +1938,9 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 {/* PENDING */}
                 {adTab==="pending" && <div className="atab">
                   <h3>Pending Approval</h3><p className="sub">Listings awaiting admin review before going live.</p>
-                  {pending.length===0 && <div className="empty-adm"><p>✅ No listings awaiting approval.</p></div>}
+                  {propertiesLoading && <EmptyState role="status">Loading listings…</EmptyState>}
+                  {!propertiesLoading && !propertiesError && !adminPropertySetComplete && <EmptyState role="status">Some listings are still loading. Pending status cannot be confirmed yet.</EmptyState>}
+                  {adminPropertyStatusReady && pending.length===0 && <EmptyState>✅ No listings awaiting approval.</EmptyState>}
                   {pending.map(p=>(
                     <div key={p.id} className="arow" style={{borderLeft:"3px solid #C4991A"}}>
                       <div className="arow-icon" style={{background:p.color}}>{p.initials}</div>
@@ -1832,7 +1957,9 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 {/* VERIFY TAKEN */}
                 {adTab==="verify" && <div className="atab">
                   <h3>Verify Taken Listings</h3><p className="sub">Admin is the final authority. Verifying confirms a listing is off-market.</p>
-                  {taken.length===0 && <div className="empty-adm"><p>No listings marked as taken yet.</p></div>}
+                  {propertiesLoading && <EmptyState role="status">Loading listings…</EmptyState>}
+                  {!propertiesLoading && !propertiesError && !adminPropertySetComplete && <EmptyState role="status">Some listings are still loading. Taken status cannot be confirmed yet.</EmptyState>}
+                  {adminPropertyStatusReady && taken.length===0 && <EmptyState>No listings marked as taken yet.</EmptyState>}
                   {taken.map(p=>(
                     <div key={p.id} className="arow" style={{borderLeft:"3px solid #dc2626"}}>
                       <div className="arow-icon" style={{background:p.color}}>{p.initials}</div>
@@ -1841,7 +1968,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                         <span className="sbadge sb-tk">⊘ Taken</span>
                         <button className="bapp" onClick={()=>{adminVerify(p.id);}}>✅ Verify & Finalise</button>
                         <button className="bghost" style={{fontSize:"0.72rem",padding:"5px 11px",color:"#C4991A",borderColor:"rgba(196,153,26,0.3)"}} onClick={()=>updatePropertyStatusApi(p.id, "AVAILABLE").then(()=>msg("↩ Restored to Available.","info")).catch(error=>msg(error.response?.data?.message || error.message,"err"))}>↩ Reject</button>
-                        <button className="bdel" onClick={()=>deleteProp(p.id)}>🗑</button>
+                        <button className="bdel" aria-label={`Delete taken listing: ${p.title}`} onClick={()=>deleteProp(p.id)}>🗑</button>
                       </div>
                     </div>
                   ))}
@@ -1850,10 +1977,10 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 {/* USERS */}
                 {adTab==="users" && <div className="atab">
                   <h3>Manage Users</h3><p className="sub">Review, activate, deactivate, or remove users from the platform.</p>
-                  {adminUsersLoading && <div className="empty-adm"><p>Loading users…</p></div>}
+                  {adminUsersLoading && <EmptyState role="status">Loading users…</EmptyState>}
                   {!adminUsersLoading && adminUsersError && <div className="form-error" role="alert">{adminUsersError}</div>}
                   {!adminUsersLoading && !adminUsersError && landlords.length === 0 && tenants.length === 0 && (
-                    <div className="empty-adm"><p>No users found.</p></div>
+                    <EmptyState>No users found.</EmptyState>
                   )}
                   {!adminUsersLoading && !adminUsersError && landlords.length > 0 && (
                     <>
@@ -1902,22 +2029,24 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 {/* ANNOUNCEMENTS */}
                 {adTab==="announce" && <div className="atab">
                   <h3>Announcements & Banners</h3><p className="sub">Platform-wide notices shown to all users on every page.</p>
-                  <div className="divlbl"><span style={{color:"#C4991A"}}>New Announcement</span></div>
-                  <div className="fg admin-fg"><label>Title</label><input placeholder="e.g. New listings in Kisumu!" value={annF.title} onChange={e=>setAnnF({...annF,title:e.target.value})}/></div>
-                  <div className="fg admin-fg"><label>Message</label><textarea placeholder="Full announcement text..." value={annF.body} onChange={e=>setAnnF({...annF,body:e.target.value})}/></div>
-                  <div style={{marginBottom:"1rem"}}>
-                    <div style={{fontSize:"0.68rem",fontWeight:700,color:"rgba(196,153,26,0.7)",textTransform:"uppercase",letterSpacing:"0.7px",marginBottom:"6px"}}>Type</div>
-                    <div className="ann-type-row">
-                      {["success","info","warning"].map(t=>(
-                        <button key={t} className={`attbtn ${t}${annF.type===t?" sel":""}`} onClick={()=>setAnnF({...annF,type:t})}>{t==="success"?"🎉 News":t==="info"?"📢 Info":"⚠️ Warning"}</button>
-                      ))}
+                  <form onSubmit={event=>{event.preventDefault();void postAnn();}}>
+                    <div className="divlbl"><span style={{color:"#C4991A"}}>New Announcement</span></div>
+                    <div className="fg admin-fg"><label htmlFor="announcement-title">Title</label><input id="announcement-title" placeholder="e.g. New listings in Kisumu!" value={annF.title} onChange={e=>setAnnF({...annF,title:e.target.value})}/></div>
+                    <div className="fg admin-fg"><label htmlFor="announcement-message">Message</label><textarea id="announcement-message" placeholder="Full announcement text..." value={annF.body} onChange={e=>setAnnF({...annF,body:e.target.value})}/></div>
+                    <div style={{marginBottom:"1rem"}}>
+                      <div style={{fontSize:"0.68rem",fontWeight:700,color:"rgba(196,153,26,0.7)",textTransform:"uppercase",letterSpacing:"0.7px",marginBottom:"6px"}}>Type</div>
+                      <div className="ann-type-row" role="group" aria-label="Announcement type">
+                        {["success","info","warning"].map(t=>(
+                          <button key={t} type="button" aria-pressed={annF.type===t} className={`attbtn ${t}${annF.type===t?" sel":""}`} onClick={()=>setAnnF({...annF,type:t})}>{t==="success"?"🎉 News":t==="info"?"📢 Info":"⚠️ Warning"}</button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                  <button className="bp" style={{background:"linear-gradient(135deg,#C4991A,#e8a800)",boxShadow:"0 3px 14px rgba(196,153,26,0.3)",marginBottom:"1.5rem"}} onClick={postAnn} disabled={annLoading}>
-                    {annLoading ? "Publishing…" : "📢 Publish Announcement"}
-                  </button>
+                    <button type="submit" className="bp" style={{background:"linear-gradient(135deg,#C4991A,#e8a800)",boxShadow:"0 3px 14px rgba(196,153,26,0.3)",marginBottom:"1.5rem"}} disabled={annLoading}>
+                      {annLoading ? "Publishing…" : "📢 Publish Announcement"}
+                    </button>
+                  </form>
                   <div className="divlbl"><span style={{color:"#C4991A"}}>Active ({activeAnns.length})</span></div>
-                  {anns.length===0 && <div className="empty-adm"><p>No announcements yet.</p></div>}
+                  {anns.length===0 && <EmptyState>No announcements yet.</EmptyState>}
                   {anns.map(a=>(
                     <div key={a.id} className="arow">
                       <div style={{fontSize:"1.4rem",flexShrink:0}}>{a.type==="success"?"🎉":a.type==="info"?"📢":"⚠️"}</div>
@@ -1925,7 +2054,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                       <div className="arow-acts">
                         <span className={`sbadge ${a.active?"sb-bo":"sb-tk"}`}>{a.active?"Live":"Hidden"}</span>
                         <button className={a.active?"bban":"bapp"} onClick={()=>{setAnns(l=>l.map(x=>x.id===a.id?{...x,active:!x.active}:x));msg(a.active?"Announcement hidden.":"Restored.","info");}}>{a.active?"Hide":"Show"}</button>
-                        <button className="bdel" onClick={()=>{setAnns(l=>l.filter(x=>x.id!==a.id));msg("Deleted.","warn");}}>🗑</button>
+                        <button type="button" className="bdel" aria-label={`Delete announcement: ${a.title}`} onClick={()=>{setAnns(l=>l.filter(x=>x.id!==a.id));msg("Deleted.","warn");}}>🗑</button>
                       </div>
                     </div>
                   ))}
@@ -1934,61 +2063,64 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 {/* POST NEW LISTING */}
                 {adTab==="post" && <div className="atab">
                   <h3>Post New Listing</h3><p className="sub">Admin listings are auto-approved and boosted to the top.</p>
-                  <input ref={admFileRef} type="file" accept="image/*,video/*" multiple style={{display:"none"}} onChange={e=>handleFiles(e.target.files,setAdmMedia)}/>
-                  <div className="frow">
-                    <div className="fg admin-fg"><label>Title *</label><input placeholder="Premium 3BR in Kilimani" value={admListF.title} onChange={e=>setAdmListF({...admListF,title:e.target.value})}/></div>
-                    <div className="fg admin-fg"><label>Location *</label><input placeholder="Kilimani, Nairobi" value={admListF.location} onChange={e=>setAdmListF({...admListF,location:e.target.value})}/></div>
-                  </div>
-                  <div className="frow">
-                    <div className="fg admin-fg"><label>Monthly Rent (KES) *</label><input type="number" placeholder="30000" value={admListF.rent} onChange={e=>setAdmListF({...admListF,rent:e.target.value})}/></div>
-                    <div className="fg admin-fg"><label>Type</label>
-                      <select value={admListF.type} onChange={e=>setAdmListF({...admListF,type:e.target.value})} style={{background:"rgba(255,255,255,0.06)",color:"#F5E6C8"}}>
-                        {["Bedsitter","Room","Apartment","House","Penthouse"].map(t=><option key={t}>{t}</option>)}
-                      </select>
+                  <form onSubmit={event=>{event.preventDefault();void adminPostListing();}}>
+                    <input ref={admFileRef} type="file" accept="image/*,video/*" multiple style={{display:"none"}} onChange={e=>handleFiles(e.target.files,setAdmMedia)}/>
+                    <div className="frow">
+                      <div className="fg admin-fg"><label htmlFor="admin-listing-title">Title *</label><input id="admin-listing-title" placeholder="Premium 3BR in Kilimani" value={admListF.title} onChange={e=>setAdmListF({...admListF,title:e.target.value})}/></div>
+                      <div className="fg admin-fg"><label htmlFor="admin-listing-location">Location *</label><input id="admin-listing-location" placeholder="Kilimani, Nairobi" value={admListF.location} onChange={e=>setAdmListF({...admListF,location:e.target.value})}/></div>
                     </div>
-                  </div>
-                  <div className="fg admin-fg"><label>Rooms & Facilities</label><input placeholder="3 Bed · 2 Bath" value={admListF.rooms} onChange={e=>setAdmListF({...admListF,rooms:e.target.value})}/></div>
-                  <div className="fg admin-fg"><label>Tags (comma-separated)</label><input placeholder="WiFi, Pool, Parking" value={admListF.tags} onChange={e=>setAdmListF({...admListF,tags:e.target.value})}/></div>
-                  <div className="fg admin-fg"><label>House Rules</label><textarea placeholder="No pets. 2 months deposit." value={admListF.rules} onChange={e=>setAdmListF({...admListF,rules:e.target.value})}/></div>
-                  <div style={{marginBottom:"1rem"}}>
-                    <button className="bghost" style={{color:"#C4991A",borderColor:"rgba(196,153,26,0.28)",marginBottom:"0.7rem"}} onClick={()=>admFileRef.current.click()}>📷 Upload Photos & Videos</button>
-                    {admMedia.length>0 && <div className="mgrid">{admMedia.map((m,i)=>(
-                      <div key={i} className="mitem">
-                        {m.type==="image"?<img src={m.url} alt=""/>:<video src={m.url} muted loop/>}
-                        <button className="mrm" onClick={()=>setAdmMedia(l=>l.filter((_,j)=>j!==i))}>✕</button>
-                        <span className="mtlbl">{m.type==="video"?"🎬":"📸"}</span>
+                    <div className="frow">
+                      <div className="fg admin-fg"><label htmlFor="admin-listing-rent">Monthly Rent (KES) *</label><input id="admin-listing-rent" type="number" placeholder="30000" value={admListF.rent} onChange={e=>setAdmListF({...admListF,rent:e.target.value})}/></div>
+                      <div className="fg admin-fg"><label htmlFor="admin-listing-type">Type</label>
+                        <select id="admin-listing-type" value={admListF.type} onChange={e=>setAdmListF({...admListF,type:e.target.value})} style={{background:"rgba(255,255,255,0.06)",color:"#F5E6C8"}}>
+                          {["Bedsitter","Room","Apartment","House","Penthouse"].map(t=><option key={t}>{t}</option>)}
+                        </select>
                       </div>
-                    ))}</div>}
-                  </div>
-                  <button className="bp" style={{background:"linear-gradient(135deg,#C4991A,#e8a800)",boxShadow:"0 3px 14px rgba(196,153,26,0.3)",width:"100%",padding:"12px"}} onClick={adminPostListing} disabled={adminListingLoading}>
-                    {adminListingLoading ? "Posting…" : "🏠 Post & Auto-Boost →"}
-                  </button>
+                    </div>
+                    <div className="fg admin-fg"><label htmlFor="admin-listing-rooms">Rooms & Facilities</label><input id="admin-listing-rooms" placeholder="3 Bed · 2 Bath" value={admListF.rooms} onChange={e=>setAdmListF({...admListF,rooms:e.target.value})}/></div>
+                    <div className="fg admin-fg"><label htmlFor="admin-listing-tags">Tags (comma-separated)</label><input id="admin-listing-tags" placeholder="WiFi, Pool, Parking" value={admListF.tags} onChange={e=>setAdmListF({...admListF,tags:e.target.value})}/></div>
+                    <div className="fg admin-fg"><label htmlFor="admin-listing-rules">House Rules</label><textarea id="admin-listing-rules" placeholder="No pets. 2 months deposit." value={admListF.rules} onChange={e=>setAdmListF({...admListF,rules:e.target.value})}/></div>
+                    <div style={{marginBottom:"1rem"}}>
+                      <button type="button" className="bghost" style={{color:"#C4991A",borderColor:"rgba(196,153,26,0.28)",marginBottom:"0.7rem"}} onClick={()=>admFileRef.current.click()}><Icon name="upload" /> Upload Photos & Videos</button>
+                      {admMedia.length>0 && <div className="mgrid">{admMedia.map((m,i)=>(
+                        <div key={i} className="mitem">
+                          {m.type==="image"?<img src={m.url} alt=""/>:<video src={m.url} muted loop/>}
+                          <button type="button" className="mrm" aria-label={`Remove uploaded media ${i + 1}`} onClick={()=>setAdmMedia(l=>l.filter((_,j)=>j!==i))}>✕</button>
+                          <span className="mtlbl"><Icon name="image" /></span>
+                        </div>
+                      ))}</div>}
+                    </div>
+                    <button type="submit" className="bp" style={{background:"linear-gradient(135deg,#C4991A,#e8a800)",boxShadow:"0 3px 14px rgba(196,153,26,0.3)",width:"100%",padding:"12px"}} disabled={adminListingLoading}>
+                      {adminListingLoading ? "Posting…" : <><Icon name="home" /> Post & Auto-Boost <Icon name="arrowRight" /></>}
+                    </button>
+                  </form>
                 </div>}
 
                 {/* SETTINGS */}
-                {adTab==="settings" && <div className="atab">
+                {adTab==="settings" && <form className="atab" onSubmit={event=>{event.preventDefault();msg("✅ Settings saved!","ok");}}>
                   <h3>Site Settings</h3><p className="sub">Control platform-wide behaviour, pricing, and moderation.</p>
                   <div className="divlbl"><span style={{color:"#C4991A"}}>Pricing</span></div>
                   <div className="frow">
-                    <div className="fg admin-fg"><label>Boost Fee (KES)</label><input type="number" value={settings.boostFee} onChange={e=>setSettings({...settings,boostFee:parseInt(e.target.value)||200})}/></div>
-                    <div className="fg admin-fg"><label>Unlock Fee (KES)</label><input type="number" value={settings.unlockFee} onChange={e=>setSettings({...settings,unlockFee:parseInt(e.target.value)||100})}/></div>
+                    <div className="fg admin-fg"><label htmlFor="setting-boost-fee">Boost Fee (KES)</label><input id="setting-boost-fee" type="number" value={settings.boostFee} readOnly /></div>
+                    <div className="fg admin-fg"><label htmlFor="setting-unlock-fee">Unlock Fee (KES)</label><input id="setting-unlock-fee" type="number" value={settings.unlockFee} readOnly /></div>
                   </div>
+                  <p className="paynote">M-PESA prices are set by the server using PROPERTY_BOOST_FEE_KES and PROPERTY_UNLOCK_FEE_KES.</p>
                   <div className="divlbl"><span style={{color:"#C4991A"}}>Moderation</span></div>
                   <div className="toggle-row">
                     <div className="toggle-info">
                       <div className="toggle-label">Require Admin Approval for New Listings</div>
                       <div className="toggle-desc">When ON, all new listings must be approved before going live.</div>
                     </div>
-                    <div className="toggle" style={{background:settings.requireApproval?"#C4991A":"rgba(255,255,255,0.1)"}} onClick={()=>setSettings(s=>({...s,requireApproval:!s.requireApproval}))}>
+                    <button type="button" className="toggle" role="switch" aria-checked={settings.requireApproval} aria-label="Require admin approval for new listings" style={{background:settings.requireApproval?"#C4991A":"rgba(255,255,255,0.1)"}} onClick={()=>setSettings(s=>({...s,requireApproval:!s.requireApproval}))}>
                       <div className="toggle-knob" style={{left:settings.requireApproval?"24px":"3px"}}/>
-                    </div>
+                    </button>
                   </div>
                   <div className="mod-notice">
-                    <p>🛡️ Content Moderation (Always Active)</p>
+                    <p><Icon name="shield" /> Content Moderation (Always Active)</p>
                     <p>Automatic profanity and inappropriate content filter runs on all text inputs. Listings with banned words are automatically blocked. {BANNED.length} banned terms monitored continuously.</p>
                   </div>
-                  <button className="bp" style={{background:"linear-gradient(135deg,#C4991A,#e8a800)",boxShadow:"0 3px 14px rgba(196,153,26,0.3)"}} onClick={()=>msg("✅ Settings saved!","ok")}>Save Settings →</button>
-                </div>}
+                  <button type="submit" className="bp" style={{background:"linear-gradient(135deg,#C4991A,#e8a800)",boxShadow:"0 3px 14px rgba(196,153,26,0.3)"}}>Save Settings →</button>
+                </form>}
 
                 {/* ACTIVITY LOG */}
                 {adTab==="activity" && <AdminActivityLog />}
@@ -2009,11 +2141,12 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         <div className="ggrid">
           {[
             {n:"01",t:"Free Tenant Login",d:"Sign up as a tenant for free. Browse all listings with photos, videos, and property details instantly."},
-            {n:"02",t:"Unlock Contacts",d:`Pay KSh ${settings.unlockFee} via M-PESA to reveal the exact location and landlord contact details for any listing.`},
+            {n:"02",t:"Unlock Contacts",d:`Pay KSh ${settings.unlockFee} through a server-initiated M-PESA STK prompt to reveal the landlord's contact details and full property location. Access is granted after Daraja confirms payment.`},
             {n:"03",t:"Free Landlord Listing",d:"Landlords sign up and list properties for free with photos, videos, contact info, and social media links."},
-            {n:"04",t:"Boost Your Listing",d:`Pay KSh ${settings.boostFee} to pin your listing at the very top of all search results for 30 days.`},
-            {n:"05",t:"Verify Availability",d:"Landlords mark listings as taken. Admin verifies and finalises to prevent double-bookings and collisions."},
-            {n:"06",t:"Safe Platform",d:"Auto content moderation blocks profanity and inappropriate content. Admins flag and remove violations instantly."},
+            {n:"04",t:"Boost Your Listing",d:`Pay KSh ${settings.boostFee} through M-PESA to feature an approved available listing for 30 days. The boost is applied after Daraja confirms payment.`},
+            {n:"05",t:"Booking & Availability",d:"A booking request records interest but does not reserve a home. The landlord confirms only after arrangements are agreed; this marks the listing taken. Landlords may also update availability for agreements made outside HouseHunt."},
+            {n:"06",t:"Payments Stay Between You",d:"HouseHunt does not collect rent, deposits, or booking payments. Tenants and landlords arrange those directly. HouseHunt payments are only for contact unlocks and optional listing boosts."},
+            {n:"07",t:"Mark Available Again",d:"When the home is vacant, both parties can confirm the booking is complete and the landlord can mark the listing available. Admins can resolve disputed availability after review."},
           ].map(s=>(
             <div key={s.n} className="gcard">
               <div className="gnum">{s.n}</div><h4>{s.t}</h4><p>{s.d}</p>
@@ -2021,11 +2154,12 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
           ))}
         </div>
       </div>}
+      </main>
+      )}
 
       {/* ─── PROPERTY MODAL ─── */}
       {liveProp && (
-        <div ref={modalRef} className="mov" role="dialog" aria-modal="true" aria-labelledby="property-details-title" tabIndex={-1} onKeyDown={e=>e.key==="Escape"&&closeModal()} onClick={e=>e.target===e.currentTarget&&closeModal()}>
-          <div className="mdl">
+        <Modal dialogRef={modalRef} labelledBy="property-details-title" onBackdropClick={closeModal}>
             <div className="mhero" style={{background:`linear-gradient(135deg,${liveProp.color}cc,${liveProp.color}77)`}}>
               {liveProp.media?.length>0 ? (
                 liveProp.media[midx]?.type==="video"
@@ -2037,7 +2171,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 </div>
               )}
               <div className="mhero-ov" />
-              {canManage && <button className="bdel" style={{position:"absolute",top:12,left:12,zIndex:10}} onClick={()=>deleteProp(liveProp.id)}>🗑 Delete</button>}
+              {canManage && <button className="bdel" aria-label={`Delete listing: ${liveProp.title}`} style={{position:"absolute",top:12,left:12,zIndex:10}} onClick={()=>deleteProp(liveProp.id)}><Icon name="trash" /> Delete</button>}
               <button className="mclose" aria-label="Close property details" onClick={closeModal}>✕</button>
             </div>
             <PropertyGallery media={liveProp.media} midx={midx} setMidx={setMidx} />
@@ -2047,7 +2181,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               user={user}
               isUnlocked={isUnlocked}
               settings={settings}
-              setPayModal={setPayModal}
+              onRequestPayment={openPropertyPayment}
               setAuthModal={setAuthModal}
               closeModal={closeModal}
               canBook={Boolean(user && user.role === "tenant" && liveProp?.status === "available" && liveProp?.approved !== false)}
@@ -2065,17 +2199,15 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 user={user}
               />
             )}
-          </div>
-        </div>
+        </Modal>
       )}
 
       {/* ─── BOOKING MODAL ─── */}
       {bookingFormOpen && bookingProperty && (
-        <div className="mov" role="presentation" onClick={e=>e.target===e.currentTarget&&resetBookingForm()}>
-          <div ref={modalRef} className="mdl auth" role="dialog" aria-modal="true" aria-labelledby="booking-title">
+        <Modal dialogRef={modalRef} labelledBy="booking-title" className="auth" onBackdropClick={resetBookingForm}>
             <button className="mclose" aria-label="Close booking form" onClick={resetBookingForm}>✕</button>
             <div className="auth-head">
-              <div className="auth-icon">📅</div>
+              <div className="auth-icon"><Icon name="calendar" /></div>
               <div>
                 <h2 id="booking-title" className="auth-title">Request Booking</h2>
                 <p className="auth-subtitle">{bookingProperty.title}</p>
@@ -2084,33 +2216,31 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
             <form onSubmit={submitBooking}>
               <div className="fg">
-                <label>Move-in date</label>
-                <input type="date" value={bookingForm.moveInDate} onChange={e=>setBookingForm({...bookingForm, moveInDate: e.target.value})} disabled={bookingSubmitting} />
+                <label htmlFor="booking-move-in-date">Move-in date</label>
+                <input id="booking-move-in-date" type="date" min={todayStr()} value={bookingForm.moveInDate} onChange={e=>setBookingForm({...bookingForm, moveInDate: e.target.value})} disabled={bookingSubmitting} />
               </div>
               <div className="fg">
-                <label>Lease duration (months)</label>
-                <input type="number" min="1" step="1" value={bookingForm.leaseMonths} onChange={e=>setBookingForm({...bookingForm, leaseMonths: e.target.value})} disabled={bookingSubmitting} />
+                <label htmlFor="booking-lease-months">Lease duration (months)</label>
+                <input id="booking-lease-months" type="number" min="1" step="1" value={bookingForm.leaseMonths} onChange={e=>setBookingForm({...bookingForm, leaseMonths: e.target.value})} disabled={bookingSubmitting} />
               </div>
               <div className="fg">
-                <label>Notes</label>
-                <textarea rows="4" value={bookingForm.notes} onChange={e=>setBookingForm({...bookingForm, notes: e.target.value})} disabled={bookingSubmitting} placeholder="Optional notes for the landlord" />
+                <label htmlFor="booking-notes">Notes</label>
+                <textarea id="booking-notes" rows="4" value={bookingForm.notes} onChange={e=>setBookingForm({...bookingForm, notes: e.target.value})} disabled={bookingSubmitting} placeholder="Optional notes for the landlord" />
               </div>
               {bookingFormError && <div className="aerr">⚠️ {bookingFormError}</div>}
               <button className="bp auth-submit" type="submit" disabled={bookingSubmitting} aria-busy={bookingSubmitting}>
                 {bookingSubmitting ? "Submitting booking…" : "Submit Booking Request →"}
               </button>
             </form>
-          </div>
-        </div>
+        </Modal>
       )}
 
       {/* ─── AUTH MODAL ─── */}
       {authModal && (
-        <div className="mov" role="presentation" onClick={e=>e.target===e.currentTarget&&setAuthModal(null)}>
-          <div ref={modalRef} className="mdl auth" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+        <Modal dialogRef={modalRef} labelledBy="auth-title" className="auth" onBackdropClick={() => setAuthModal(null)}>
             <button className="mclose" aria-label="Close authentication" onClick={()=>setAuthModal(null)}>✕</button>
             <div className="auth-head">
-              <div className="auth-icon">{authF.mode==="forgot"||authF.mode==="reset"?"🔐":authModal==="admin"?"🔐":authModal==="landlord"?"🏠":"👤"}</div>
+              <div className="auth-icon"><Icon name={authF.mode==="forgot"||authF.mode==="reset"||authModal==="admin" ? "key" : authModal==="landlord" ? "home" : "user"} /></div>
               <div>
                 <h2 id="auth-title" className="auth-title">
                   {authF.mode==="forgot" ? "Reset your password"
@@ -2127,36 +2257,51 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                         ? "Restricted access for administrators only."
                         : authModal==="landlord"
                           ? "Join free to list properties, manage bookings and share your space."
-                          : `Browse verified homes and unlock landlord contacts for KSh ${settings.unlockFee}.`}
+                          : `Browse homes and unlock landlord contacts for KSh ${settings.unlockFee}.`}
                 </p>
               </div>
             </div>
+            {(authF.mode==="login" || authF.mode==="register") && (
+              <div className="auth-role-tabs" role="group" aria-label="Account type">
+                {["tenant","landlord","admin"].map(role => (
+                  <button
+                    key={role}
+                    type="button"
+                    aria-pressed={authModal===role}
+                    className={authModal===role ? "selected" : ""}
+                    onClick={() => setAuthModal(role)}
+                  >
+                    {role === "tenant" ? "Tenant" : role === "landlord" ? "Landlord" : "Admin"}
+                  </button>
+                ))}
+              </div>
+            )}
             {(authF.mode==="login" || authF.mode==="register") && authModal!=="admin" && (
               <div className="auth-tabs">
-                <button className={`at${authF.mode==="login"?" on":""}`} onClick={()=>switchAuthMode("login")}>Sign In</button>
-                <button className={`at${authF.mode==="register"?" on":""}`} onClick={()=>switchAuthMode("register")}>Sign Up Free</button>
+                <button type="button" className={`at${authF.mode==="login"?" on":""}`} onClick={()=>switchAuthMode("login")}>Sign In</button>
+                <button type="button" className={`at${authF.mode==="register"?" on":""}`} onClick={()=>switchAuthMode("register")}>Sign Up Free</button>
               </div>
             )}
             {authErr && <div className="aerr">⚠️ {authErr}</div>}
             {authNotice && <div className="field-success" role="status">{authNotice}</div>}
             {authF.mode==="register" && authModal!=="admin" && (
               <div className="fg">
-                <label>Full Name</label>
-                <input ref={authNameRef} maxLength={80} placeholder="e.g. Jane Doe" value={authF.name} onChange={e=>{setAuthF({...authF,name:e.target.value});setAuthFieldErrors(current=>({...current,name:undefined}));}} disabled={authLoading} aria-invalid={Boolean(authFieldErrors.name)} />
+                <label htmlFor="auth-full-name">Full Name</label>
+                <input id="auth-full-name" ref={authNameRef} maxLength={80} placeholder="e.g. Jane Doe" value={authF.name} onChange={e=>{setAuthF({...authF,name:e.target.value});setAuthFieldErrors(current=>({...current,name:undefined}));}} disabled={authLoading} aria-invalid={Boolean(authFieldErrors.name)} />
                 {authFieldErrors.name && <div className="field-error" role="alert">{authFieldErrors.name}</div>}
               </div>
             )}
             {authF.mode!=="reset" && (
               <div className="fg">
-                <label>Email</label>
-                <input ref={authEmailRef} maxLength={120} type="email" autoComplete="email" placeholder="you@example.com" value={authF.email} onChange={e=>{setAuthF({...authF,email:e.target.value});setAuthErr("");setAuthNotice("");setAuthFieldErrors(current=>({...current,email:undefined}));}} disabled={authLoading || passwordResetLoading} aria-invalid={Boolean(authFieldErrors.email || (authErr && authF.email && !/^\S+@\S+\.\S+$/.test(authF.email)))} />
+                <label htmlFor="auth-email">Email</label>
+                <input id="auth-email" ref={authEmailRef} maxLength={120} type="email" autoComplete="email" placeholder="you@example.com" value={authF.email} onChange={e=>{setAuthF({...authF,email:e.target.value});setAuthErr("");setAuthNotice("");setAuthFieldErrors(current=>({...current,email:undefined}));}} disabled={authLoading || passwordResetLoading} aria-invalid={Boolean(authFieldErrors.email || (authErr && authF.email && !/^\S+@\S+\.\S+$/.test(authF.email)))} />
                 {authFieldErrors.email && <div className="field-error" role="alert">{authFieldErrors.email}</div>}
               </div>
             )}
             {(authF.mode==="login" || authF.mode==="register") && (
               <div className="fg">
-                <label>Password</label>
-                <div className="password-field"><input ref={authPasswordRef} maxLength={128} type={showPassword ? "text" : "password"} autoComplete={authF.mode==="register"?"new-password":"current-password"} placeholder="••••••••" value={authF.password} onChange={e=>{setAuthF({...authF,password:e.target.value});setAuthErr("");setAuthNotice("");setAuthFieldErrors(current=>({...current,password:undefined}));}} disabled={authLoading} aria-invalid={Boolean(authFieldErrors.password || (authErr && authF.password.length < 8))} /><button type="button" className="password-toggle" onClick={() => setShowPassword(visible => !visible)} aria-label={showPassword ? "Hide password" : "Show password"} title={showPassword ? "Hide password" : "Show password"}>{showPassword ? "🙈" : "👁"}</button></div>
+                <label htmlFor="auth-password">Password</label>
+                <div className="password-field"><input id="auth-password" ref={authPasswordRef} maxLength={128} type={showPassword ? "text" : "password"} autoComplete={authF.mode==="register"?"new-password":"current-password"} placeholder="••••••••" value={authF.password} onChange={e=>{setAuthF({...authF,password:e.target.value});setAuthErr("");setAuthNotice("");setAuthFieldErrors(current=>({...current,password:undefined}));}} disabled={authLoading} aria-invalid={Boolean(authFieldErrors.password || (authErr && authF.password.length < 8))} /><button type="button" className="password-toggle" onClick={() => setShowPassword(visible => !visible)} aria-label={showPassword ? "Hide password" : "Show password"} title={showPassword ? "Hide password" : "Show password"}><Icon name={showPassword ? "eyeOff" : "eye"} /></button></div>
                 {authFieldErrors.password && <div className="field-error" role="alert">{authFieldErrors.password}</div>}
                 {authF.mode==="login" && (
                   <div className="auth-forgot-row">
@@ -2215,13 +2360,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 </button>
               </p>
             )}
-          </div>
-        </div>
+        </Modal>
       )}
 
       {passwordModalOpen && (
-        <div className="mov" role="presentation" onClick={event => event.target === event.currentTarget && !passwordSaving && setPasswordModalOpen(false)}>
-          <div ref={modalRef} className="mdl auth" role="dialog" aria-modal="true" aria-labelledby="password-title" tabIndex={-1}>
+        <Modal dialogRef={modalRef} labelledBy="password-title" className="auth" onBackdropClick={() => !passwordSaving && setPasswordModalOpen(false)}>
             <button
               className="mclose"
               aria-label="Close change password"
@@ -2231,7 +2374,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               ✕
             </button>
             <div className="auth-head">
-              <div className="auth-icon">🔐</div>
+              <div className="auth-icon"><Icon name="key" /></div>
               <div>
                 <h2 id="password-title" className="auth-title">Change password</h2>
                 <p className="auth-subtitle">Enter your current password, then choose a new password with at least 8 characters.</p>
@@ -2282,90 +2425,60 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 {passwordSaving ? "Updating password…" : "Update password"}
               </button>
             </form>
-          </div>
-        </div>
+        </Modal>
       )}
 
       {/* ─── PAYMENT MODAL ─── */}
       {payModal && (
-        <div className="mov" onClick={e=>e.target===e.currentTarget&&setPayModal(null)}>
-          <div className="mdl pay">
-            <button className="mclose" style={{position:"static",float:"right",marginBottom:"0.4rem"}} onClick={()=>setPayModal(null)}>✕</button>
-            <div style={{fontSize:"2.4rem",marginBottom:"0.4rem"}}>{payModal.type==="boost"?"⭐":"🔓"}</div>
-            <h2 style={{fontFamily:"Cormorant Garamond,serif",fontSize:"1.5rem",fontWeight:700,marginBottom:"0.25rem"}}>{payModal.type==="boost"?"Boost Your Listing":"Unlock This Listing"}</h2>
-            <p style={{color:"#bbb",fontSize:"0.78rem",marginBottom:"1.3rem",lineHeight:1.6}}>{payModal.type==="boost"?"Your listing will be pinned at the top of all search results for 30 days.":"Get the exact location and landlord contact details for this listing."}</p>
-            <div className="payamt">{payModal.type==="boost"?KES(settings.boostFee):KES(settings.unlockFee)} <small>/ once</small></div>
-            <div style={{background:"rgba(0,166,81,0.07)",border:"1px solid rgba(0,166,81,0.2)",borderRadius:9,padding:"1rem",margin:"1.1rem 0"}}>
-              <p style={{fontSize:"0.78rem",color:"#555",lineHeight:1.65}}><strong style={{color:"#007A3D"}}>M-PESA</strong><br/>Paybill: <strong>522522</strong> · Account: <strong>HOUSEHUNT</strong><br/>Amount: <strong>{payModal.type==="boost"?KES(settings.boostFee):KES(settings.unlockFee)}</strong></p>
-            </div>
-            <button className="mpesabtn" onClick={simulatePay} disabled={payLoading} aria-busy={payLoading}>{payLoading ? "Processing payment…" : "✓ Confirm M-PESA Payment"}</button>
-            <p className="paynote">Demo simulation. In production, an M-PESA STK push will be sent to your registered phone number.</p>
-          </div>
-        </div>
-      )}
-
-      {bookingPaymentModal && (
-        <div className="mov" onClick={event => event.target === event.currentTarget && setBookingPaymentModal(null)}>
-          <div ref={modalRef} className="mdl pay" role="dialog" aria-modal="true" aria-labelledby="booking-payment-title" tabIndex={-1}>
-            <button className="mclose" style={{position:"static",float:"right",marginBottom:"0.4rem"}} onClick={() => setBookingPaymentModal(null)}>✕</button>
-            <div style={{fontSize:"2.4rem",marginBottom:"0.4rem"}}>📱</div>
-            <h2 id="booking-payment-title" style={{fontFamily:"Cormorant Garamond,serif",fontSize:"1.5rem",fontWeight:700,marginBottom:"0.25rem"}}>Pay booking with M-PESA</h2>
-            <p style={{color:"#777",fontSize:"0.9rem",marginBottom:"0.6rem"}}>{bookingPaymentModal.booking.property?.title || "Approved booking"}</p>
-            <div className="payamt">{KES(bookingPaymentModal.booking.totalDue ?? bookingPaymentModal.booking.monthlyRent ?? bookingPaymentModal.booking.property?.price)} <small>KES due</small></div>
-            {bookingPaymentModal.loadingExisting
-              ? <p className="paynote">Checking for an existing payment…</p>
-              : (
-                <>
-                  {!bookingPaymentModal.hasStkPush && bookingPaymentModal.status !== "SUCCESS" && (
-                    <div className="fg" style={{textAlign:"left",marginTop:"1rem"}}>
-                      <label htmlFor="booking-payment-phone">M-PESA phone number</label>
-                      <input
-                        id="booking-payment-phone"
-                        type="tel"
-                        autoComplete="tel"
-                        placeholder="0712345678"
-                        value={bookingPaymentPhone}
-                        onChange={event => setBookingPaymentPhone(event.target.value)}
-                        disabled={bookingPaymentLoading}
-                      />
-                    </div>
-                  )}
-                  {bookingPaymentError && <div className="form-error" role="alert">{bookingPaymentError}</div>}
-                  {bookingPaymentModal.message && <p className="paynote" role="status">{bookingPaymentModal.message}</p>}
-                  {bookingPaymentModal.status === "SUCCESS" ? (
-                    <button className="mpesabtn" onClick={() => setBookingPaymentModal(null)}>Close</button>
-                  ) : bookingPaymentModal.hasStkPush ? (
-                    <button className="mpesabtn" onClick={() => void refreshBookingPaymentStatus(true)} disabled={bookingPaymentLoading} aria-busy={bookingPaymentLoading}>
-                      {bookingPaymentLoading ? "Checking…" : "Check payment status"}
-                    </button>
-                  ) : (
-                    <button className="mpesabtn" onClick={() => void handleBookingPayment()} disabled={bookingPaymentLoading || !bookingPaymentPhone.trim()} aria-busy={bookingPaymentLoading}>
-                      {bookingPaymentLoading ? "Sending STK Push…" : bookingPaymentModal.status === "FAILED" ? "Try M-PESA again" : "Send STK Push"}
-                    </button>
-                  )}
-                  <p className="paynote">An STK payment prompt will be sent to this phone number. Approve it on your device; the server confirms payment from Daraja’s callback.</p>
-                </>
-              )}
-          </div>
-        </div>
+        <Modal dialogRef={modalRef} labelledBy="property-payment-title" className="pay" onBackdropClick={() => !payLoading && setPayModal(null)}>
+            <button className="mclose" aria-label="Close payment" style={{position:"static",float:"right",marginBottom:"0.4rem"}} onClick={()=>!payLoading && setPayModal(null)} disabled={payLoading}>✕</button>
+            <div style={{fontSize:"2.4rem",marginBottom:"0.4rem"}}><Icon name={payModal.type==="boost" ? "star" : "unlock"} /></div>
+            <h2 id="property-payment-title" style={{fontFamily:"Cormorant Garamond,serif",fontSize:"1.5rem",fontWeight:700,marginBottom:"0.25rem"}}>{payModal.type==="boost"?"Boost Your Listing":"Unlock This Listing"}</h2>
+            <p style={{color:"#777",fontSize:"0.84rem",marginBottom:"0.8rem",lineHeight:1.6}}>{payModal.type==="boost"?"Feature this approved listing in search results for 30 days.":"Reveal the full property location and landlord contact details."}</p>
+            <div className="payamt">{KES(payModal.amount || (payModal.type==="boost" ? settings.boostFee : settings.unlockFee))} <small>KES</small></div>
+            {!payModal.hasStkPush && (
+              <div className="fg" style={{textAlign:"left",marginTop:"1rem"}}>
+                <label htmlFor="property-payment-phone">M-PESA phone number</label>
+                <input
+                  id="property-payment-phone"
+                  type="tel"
+                  autoComplete="tel"
+                  placeholder="0712345678"
+                  value={payPhone}
+                  onChange={event => setPayPhone(event.target.value)}
+                  disabled={payLoading}
+                />
+              </div>
+            )}
+            {payError && <div className="form-error" role="alert">{payError}</div>}
+            {payModal.message && <p className="paynote" role="status">{payModal.message}</p>}
+            {payModal.hasStkPush && payModal.status === "PENDING" ? (
+              <button className="mpesabtn" type="button" onClick={() => void refreshPropertyPaymentStatus(true)} disabled={payLoading || payModal.paymentLookupLoading} aria-busy={payLoading || payModal.paymentLookupLoading}>
+                {payModal.paymentLookupLoading ? "Checking for payment…" : payLoading ? "Checking payment…" : "Check payment status"}
+              </button>
+            ) : (
+              <button className="mpesabtn" type="button" onClick={() => void handlePropertyPayment()} disabled={payLoading || payModal.paymentLookupLoading || !payPhone.trim()} aria-busy={payLoading || payModal.paymentLookupLoading}>
+              {payModal.paymentLookupLoading ? "Checking for payment…" : payLoading ? "Sending STK Push…" : payModal.status === "FAILED" ? "Try M-PESA again" : "Send M-PESA STK Push"}
+              </button>
+            )}
+            <p className="paynote">An M-PESA prompt will be sent to this phone. Approve it on your device; access or the boost is applied only after the server confirms payment with Daraja.</p>
+        </Modal>
       )}
 
       {/* ─── CONFIRM MODAL ─── */}
       {confModal && (
-        <div className="mov" onClick={e=>e.target===e.currentTarget&&setConfModal(null)}>
-          <div className="mdl conf">
-            <div style={{fontSize:"2.3rem",marginBottom:"0.7rem"}}>{confModal.type==="ban"?"🚫":confModal.type==="close-test"?"🧹":confModal.type==="completion"?"🏁":"🗑️"}</div>
-            <h3 style={{fontFamily:"Cormorant Garamond,serif",fontSize:"1.4rem",fontWeight:700,marginBottom:"0.5rem"}}>{confModal.title}</h3>
+        <Modal dialogRef={modalRef} labelledBy="confirmation-title" className="conf" onBackdropClick={() => setConfModal(null)}>
+            <div style={{fontSize:"2.3rem",marginBottom:"0.7rem"}}><Icon name={confModal.type==="ban" ? "shield" : confModal.type==="completion" ? "checkCircle" : "trash"} /></div>
+            <h2 id="confirmation-title" style={{fontFamily:"Cormorant Garamond,serif",fontSize:"1.4rem",fontWeight:700,marginBottom:"0.5rem"}}>{confModal.title}</h2>
             <p style={{fontSize:"0.81rem",color:"#777",lineHeight:1.6}}>{confModal.msg2}</p>
             <div className="confbtns">
               <button className="confcancel" onClick={()=>setConfModal(null)}>Cancel</button>
               <button className={confModal.type==="ban"||confModal.type==="completion"?"confban":"confdel"} onClick={confModal.onConfirm}>{confModal.confirmLabel || (confModal.type==="ban"?"Confirm":confModal.type==="close-test"?"Close booking":confModal.type==="test-data"?"Mark as test":"Delete")}</button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
 
-      {toast && <div className={`toast ${toast.k}`} role="status" aria-live="polite">{toast.m}</div>}
+      {toast && <Toast variant={toast.k}>{toast.m}</Toast>}
     </div>
   );
 }

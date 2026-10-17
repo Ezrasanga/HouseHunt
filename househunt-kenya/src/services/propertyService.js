@@ -12,7 +12,7 @@ function propertyStatus(status) {
 }
 
 function locationLabel(location = {}) {
-	return [location.estate, location.town, location.county].filter(Boolean).join(", ") || "Location unavailable";
+	return [location.street, location.estate, location.town, location.county].filter(Boolean).join(", ") || "Location unavailable";
 }
 
 function amenityTags(amenities = {}) {
@@ -42,10 +42,12 @@ export function normalizeProperty(property, index = 0) {
 		landlordId: owner?.id || owner?._id || property?.owner,
 		landlord: owner,
 		status: propertyStatus(property?.status),
-		boosted: Boolean(property?.featured),
+		boosted: Boolean(property?.featured && (!property.featuredUntil || new Date(property.featuredUntil) > new Date())),
+		featuredUntil: property?.featuredUntil || null,
 		flagged: propertyStatus(property?.status) === "hidden",
 		approved: Boolean(property?.isApproved),
-		contact: null,
+		contact: property?.contact || null,
+		unlocked: Boolean(property?.unlocked),
 	};
 }
 

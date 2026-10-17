@@ -124,6 +124,16 @@ const propertySchema = new mongoose.Schema(
       default: false,
       index: true,
     },
+    featuredUntil: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    featuredPayment: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Payment',
+      default: null,
+    },
     views: {
       type: Number,
       default: 0,

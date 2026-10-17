@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getAuditEvents } from "../../services/auditService";
+import EmptyState from "../common/EmptyState";
+import Pagination from "../common/Pagination";
 
 export default function AdminActivityLog() {
   const [events, setEvents] = useState([]);
@@ -36,8 +38,8 @@ export default function AdminActivityLog() {
         {loading ? "Loading…" : "Refresh activity"}
       </button>
       {error && <div className="form-error" role="alert">{error}</div>}
-      {loading && <div className="empty-adm"><p>Loading activity…</p></div>}
-      {!loading && !error && events.length === 0 && <div className="empty-adm"><p>No activity has been recorded yet.</p></div>}
+      {loading && <EmptyState role="status">Loading activity…</EmptyState>}
+      {!loading && !error && events.length === 0 && <EmptyState>No activity has been recorded yet.</EmptyState>}
       {!loading && !error && events.length > 0 && (
         <div className="actlog">
           {events.map(event => (
@@ -50,13 +52,7 @@ export default function AdminActivityLog() {
           ))}
         </div>
       )}
-      {pagination && pagination.totalPages > 1 && (
-        <div className="property-pagination">
-          <button type="button" className="bghost" disabled={!pagination.hasPrevPage || loading} onClick={() => void loadEvents(page - 1)}>Previous</button>
-          <span>Page {pagination.page} of {pagination.totalPages} · {pagination.total} events</span>
-          <button type="button" className="bghost" disabled={!pagination.hasNextPage || loading} onClick={() => void loadEvents(page + 1)}>Next</button>
-        </div>
-      )}
+      <Pagination pagination={pagination} loading={loading} onPageChange={nextPage => void loadEvents(nextPage)} ariaLabel="Activity log pages" totalLabel="events" />
     </div>
   );
 }

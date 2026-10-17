@@ -14,44 +14,52 @@ function handleError(res, err) {
   return sendResponse(res, status, false, status >= 500 ? 'Internal Server Error' : (err?.message || 'Request failed'), null, []);
 }
 
-export async function createPayment(req, res) {
+export async function createPropertyPayment(req, res) {
   try {
-    const result = await paymentService.createPayment(req.user, req.body);
+    const result = await paymentService.createPropertyPayment(req.user, req.body);
     await recordAuditEvent({
       actor: req.user,
-      action: 'Payment created',
-      description: 'Created a pending booking payment',
+      action: 'Property payment created',
+      description: `Created a pending ${result.purpose} payment`,
       resourceType: 'payment',
       resourceId: result.id,
     });
-    return sendResponse(res, 201, true, 'Payment request created successfully', result, []);
+    return sendResponse(res, 201, true, 'Property payment request created successfully', result, []);
   } catch (err) {
     return handleError(res, err);
   }
 }
 
-export async function getPayment(req, res) {
+export async function getPropertyPayment(req, res) {
   try {
-    const payment = await paymentService.getPaymentById(req.user, req.params.id);
-    return sendResponse(res, 200, true, 'Payment fetched successfully', payment, []);
+    const result = await paymentService.getPropertyPayment(req.user, req.params.propertyId, req.query.purpose);
+    return sendResponse(res, 200, true, 'Property payment fetched successfully', result, []);
   } catch (err) {
     return handleError(res, err);
   }
 }
 
-export async function listPayments(req, res) {
+export async function listUnlockedPropertyIds(req, res) {
   try {
-    const result = await paymentService.listPayments(req.user, req.query);
-    return sendResponse(res, 200, true, 'Payments fetched successfully', result, []);
+    const propertyIds = await paymentService.listUnlockedPropertyIds(req.user);
+    return sendResponse(res, 200, true, 'Unlocked properties fetched successfully', { propertyIds }, []);
   } catch (err) {
     return handleError(res, err);
   }
 }
 
-export async function listPaymentsByBooking(req, res) {
+export async function getPropertyPaymentFees(_req, res) {
   try {
-    const result = await paymentService.listPaymentsByBookingId(req.user, req.params.bookingId, req.query);
-    return sendResponse(res, 200, true, 'Booking payments fetched successfully', result, []);
+    return sendResponse(res, 200, true, 'Property payment fees fetched successfully', paymentService.getPropertyPaymentFees(), []);
+  } catch (err) {
+    return handleError(res, err);
+  }
+}
+
+export async function getPropertyPaymentById(req, res) {
+  try {
+    const payment = await paymentService.getPropertyPaymentById(req.user, req.params.paymentId);
+    return sendResponse(res, 200, true, 'Property payment fetched successfully', payment, []);
   } catch (err) {
     return handleError(res, err);
   }
@@ -67,7 +75,7 @@ export async function initiateStkPush(req, res) {
       resourceType: 'payment',
       resourceId: req.params.paymentId,
     });
-    return sendResponse(res, 200, true, 'STK Push initiated successfully', result, []);
+    return sendResponse(res, 200, true, 'Property payment STK Push initiated successfully', result, []);
   } catch (err) {
     return handleError(res, err);
   }
@@ -83,7 +91,7 @@ export async function queryStkPushStatus(req, res) {
       resourceType: 'payment',
       resourceId: req.params.paymentId,
     });
-    return sendResponse(res, 200, true, 'M-PESA payment status checked successfully', result, []);
+    return sendResponse(res, 200, true, 'Property payment status checked successfully', result, []);
   } catch (err) {
     return handleError(res, err);
   }
