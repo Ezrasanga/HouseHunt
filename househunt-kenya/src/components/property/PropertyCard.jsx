@@ -2,6 +2,7 @@ import Badge from "../common/Badge";
 import Button from "../common/Button";
 import Card from "../common/Card";
 import Icon from "../common/Icon";
+import { formatAvailabilityConfirmation } from "../../utils/availability";
 
 export default function PropertyCard({ p, onView, user, onDel, isFavorite = false, onToggleFavorite }) {
   const KES = n => `KSh ${Number(n).toLocaleString()}`;
@@ -31,6 +32,7 @@ export default function PropertyCard({ p, onView, user, onDel, isFavorite = fals
         <div className="ptitle">{p.title}</div>
         <div className="ploc"><Icon name="mapPin" /> {p.location}</div>
         <div className="ptrust"><span className="pverified">{p.approved ? <><Icon name="checkCircle" /> Admin reviewed</> : <><Icon name="clock" /> Pending review</>}</span><Badge className={`pavailability ${p.status === "available" ? "available" : "taken"}`}>{p.status === "available" ? "Available" : p.status === "pending" ? "Pending" : "Taken"}</Badge></div>
+        {p.status === "available" && <div className="pconfirmation">Availability last confirmed: {formatAvailabilityConfirmation(p.availabilityConfirmedAt)}</div>}
         <div className="pmeta">
           <div className="prent">{KES(p.rent)}<sub>/mo</sub></div>
           <div className="prooms">{p.rooms}</div>

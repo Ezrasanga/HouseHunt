@@ -97,6 +97,9 @@ function parseBoolean(value) {
   return undefined;
 }
 
+const propertyAmenities = ['wifi', 'parking', 'water', 'electricity', 'security', 'balcony', 'furnished', 'petFriendly'];
+const propertySorts = ['featured', 'newest', 'recently-confirmed'];
+
 function buildPublicFilter(query = {}) {
   const filter = { isApproved: true, status: { $ne: 'HIDDEN' } };
 
@@ -114,6 +117,18 @@ function buildPublicFilter(query = {}) {
   if (query.maxPrice !== undefined) filter.price = { ...filter.price, $lte: Number(query.maxPrice) };
   if (query.bedrooms !== undefined) filter.bedrooms = Number(query.bedrooms);
   if (query.bathrooms !== undefined) filter.bathrooms = Number(query.bathrooms);
+  if (query.amenities !== undefined) {
+    const amenities = String(query.amenities).split(',').map(value => value.trim()).filter(Boolean);
+    const unknownAmenities = amenities.filter(amenity => !propertyAmenities.includes(amenity));
+    if (unknownAmenities.length) {
+      const error = new Error('One or more requested amenities are invalid');
+      error.status = 400;
+      throw error;
+    }
+    for (const amenity of new Set(amenities)) {
+      filter[`amenities.${amenity}`] = true;
+    }
+  }
   const furnished = parseBoolean(query.furnished);
   if (furnished !== undefined) filter['amenities.furnished'] = furnished;
   const petFriendly = parseBoolean(query.petFriendly);
@@ -144,10 +159,24 @@ export async function listProperties(query = {}, viewer = null) {
   const isAdmin = viewer?.role === 'ADMIN';
   const isLandlord = viewer?.role === 'LANDLORD';
   if (!isAdmin && !isLandlord) {
-    await Property.updateMany(
-      { featured: true, featuredUntil: { $ne: null, $lte: new Date() } },
-      { $set: { featured: false, featuredUntil: null, featuredPayment: null } }
-    );
+    for (const field of ['county', 'town']) {
+      if (query[field] !== undefined && (typeof query[field] !== 'string' || query[field].trim().length > 100)) {
+        const error = new Error(`${field} must be a string of 100 characters or fewer`);
+        error.status = 400;
+        throw error;
+      }
+    }
+    if (query.amenities !== undefined && (typeof query.amenities !== 'string' || query.amenities.length > 200)) {
+      const error = new Error('amenities must be a comma-separated list of valid amenities');
+      error.status = 400;
+      throw error;
+    }
+    const sort = query.sort || 'featured';
+    if (!propertySorts.includes(String(sort))) {
+      const error = new Error('sort must be featured, newest, or recently-confirmed');
+      error.status = 400;
+      throw error;
+    }
   }
   const filter = isAdmin || isLandlord
     ? {}
@@ -173,12 +202,31 @@ export async function listProperties(query = {}, viewer = null) {
       error.status = 400;
       throw error;
     }
+    if (query.bedrooms !== undefined && !Number.isInteger(Number(query.bedrooms))) {
+      const error = new Error('bedrooms must be a whole number');
+      error.status = 400;
+      throw error;
+    }
   }
+
+  if (!isAdmin && !isLandlord) {
+    await Property.updateMany(
+      { featured: true, featuredUntil: { $ne: null, $lte: new Date() } },
+      { $set: { featured: false, featuredUntil: null, featuredPayment: null } }
+    );
+  }
+
+  const sort = isAdmin || isLandlord ? 'featured' : String(query.sort || 'featured');
+  const sortOrder = sort === 'newest'
+    ? { createdAt: -1, _id: -1 }
+    : sort === 'recently-confirmed'
+      ? { status: 1, availabilityConfirmedAt: -1, createdAt: -1, _id: -1 }
+      : { featured: -1, createdAt: -1, _id: -1 };
 
   const [properties, total] = await Promise.all([
     Property.find(filter)
       .populate('owner', 'firstName lastName profileImage')
-      .sort(isAdmin || isLandlord ? { createdAt: -1 } : { featured: -1, createdAt: -1 })
+      .sort(isAdmin || isLandlord ? { createdAt: -1, _id: -1 } : sortOrder)
       .skip(skip)
       .limit(limit)
       .lean(),
@@ -527,14 +575,69 @@ export async function updatePropertyStatus(id, actor, payload = {}) {
     status: property.status,
     ...(actor.role === 'LANDLORD' ? { owner: actor.id, isApproved: true } : {}),
   };
+  const updates = { status: newStatus };
+  if (actor.role === 'LANDLORD' && newStatus === 'AVAILABLE') {
+    updates.availabilityConfirmedAt = new Date();
+  }
   const updatedProperty = await Property.findOneAndUpdate(
     filter,
-    { $set: { status: newStatus } },
+    { $set: updates },
     { new: true, runValidators: true }
   );
   if (!updatedProperty) {
     throw createPropertyLifecycleError(
       'The property changed while its status was being updated. Refresh and try again.'
+    );
+  }
+
+  const populated = await Property.findById(updatedProperty._id).populate('owner', 'firstName lastName profileImage').lean();
+  return { property: sanitizeProperty(populated) };
+}
+
+export async function confirmPropertyAvailability(id, actor) {
+  if (!actor?.id) {
+    const error = new Error('Authentication required');
+    error.status = 401;
+    throw error;
+  }
+
+  if (actor.role !== 'LANDLORD') {
+    const error = new Error('Only landlords can confirm listing availability');
+    error.status = 403;
+    throw error;
+  }
+
+  const property = await Property.findById(id);
+  if (!property) {
+    const error = new Error('Property not found');
+    error.status = 404;
+    throw error;
+  }
+
+  if (normalizeId(property.owner) !== normalizeId(actor.id)) {
+    const error = new Error('You may only confirm availability for your own properties');
+    error.status = 403;
+    throw error;
+  }
+
+  if (!property.isApproved || property.status !== 'AVAILABLE') {
+    throw createPropertyLifecycleError('Only approved available listings can be confirmed as available.');
+  }
+
+  await assertPropertyCanBeMadeAvailable(property._id);
+  const updatedProperty = await Property.findOneAndUpdate(
+    {
+      _id: property._id,
+      owner: actor.id,
+      isApproved: true,
+      status: 'AVAILABLE',
+    },
+    { $set: { availabilityConfirmedAt: new Date() } },
+    { new: true, runValidators: true }
+  );
+  if (!updatedProperty) {
+    throw createPropertyLifecycleError(
+      'The property changed while availability was being confirmed. Refresh and try again.'
     );
   }
 

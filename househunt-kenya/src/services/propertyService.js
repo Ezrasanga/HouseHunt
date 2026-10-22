@@ -42,6 +42,7 @@ export function normalizeProperty(property, index = 0) {
 		landlordId: owner?.id || owner?._id || property?.owner,
 		landlord: owner,
 		status: propertyStatus(property?.status),
+		availabilityConfirmedAt: property?.availabilityConfirmedAt || null,
 		boosted: Boolean(property?.featured && (!property.featuredUntil || new Date(property.featuredUntil) > new Date())),
 		featuredUntil: property?.featuredUntil || null,
 		flagged: propertyStatus(property?.status) === "hidden",
@@ -90,6 +91,11 @@ export async function approveProperty(id, isApproved) {
 
 export async function updatePropertyStatus(id, status) {
 	const response = await api.patch(`/api/properties/${id}/status`, { status: status.toUpperCase() });
+	return propertyFromResponse(response);
+}
+
+export async function confirmPropertyAvailability(id) {
+	const response = await api.post(`/api/properties/${id}/confirm-availability`);
 	return propertyFromResponse(response);
 }
 

@@ -3,25 +3,54 @@ import assert from 'node:assert/strict';
 
 import Booking from '../models/Booking.js';
 import Property from '../models/Property.js';
+import propertyRouter from '../routes/properties.js';
 import {
   approveProperty,
+  confirmPropertyAvailability,
   deleteProperty,
+  listProperties,
   normalizeId,
   updateProperty,
   updatePropertyStatus,
 } from '../services/propertyService.js';
 
 const originalPropertyFindById = Property.findById;
+const originalPropertyFind = Property.find;
+const originalPropertyCountDocuments = Property.countDocuments;
 const originalPropertyFindOneAndDelete = Property.findOneAndDelete;
 const originalPropertyFindOneAndUpdate = Property.findOneAndUpdate;
+const originalPropertyUpdateMany = Property.updateMany;
 const originalBookingExists = Booking.exists;
 
 test.afterEach(() => {
   Property.findById = originalPropertyFindById;
+  Property.find = originalPropertyFind;
+  Property.countDocuments = originalPropertyCountDocuments;
   Property.findOneAndDelete = originalPropertyFindOneAndDelete;
   Property.findOneAndUpdate = originalPropertyFindOneAndUpdate;
+  Property.updateMany = originalPropertyUpdateMany;
   Booking.exists = originalBookingExists;
 });
+
+function mockPropertyList({ total = 0, properties = [] } = {}) {
+  const captured = {};
+  Property.find = filter => {
+    captured.filter = filter;
+    return {
+      populate() { return this; },
+      sort(value) { captured.sort = value; return this; },
+      skip(value) { captured.skip = value; return this; },
+      limit(value) { captured.limit = value; return this; },
+      lean: async () => properties,
+    };
+  };
+  Property.countDocuments = async filter => {
+    assert.equal(filter, captured.filter);
+    return total;
+  };
+  Property.updateMany = async () => {};
+  return captured;
+}
 
 test('normalizeId converts object-like ids to comparable strings', () => {
   assert.equal(normalizeId('507f191e810c19729de860ea'), '507f191e810c19729de860ea');
@@ -29,6 +58,65 @@ test('normalizeId converts object-like ids to comparable strings', () => {
   assert.equal(normalizeId({ id: '507f191e810c19729de860ea' }), '507f191e810c19729de860ea');
   assert.equal(normalizeId({ toString: () => '507f191e810c19729de860ea' }), '507f191e810c19729de860ea');
   assert.equal(normalizeId(null), null);
+});
+
+test('availability confirmation route is registered for landlords', () => {
+  const route = propertyRouter.stack.find(layer => layer.route?.path === '/:id/confirm-availability');
+
+  assert.ok(route);
+  assert.equal(route.route.methods.post, true);
+  assert.equal(route.route.stack.length, 3);
+});
+
+test('public property search applies location, bedroom, and amenity filters and preserves pagination', async () => {
+  const captured = mockPropertyList({ total: 13 });
+
+  const result = await listProperties({
+    county: 'Nairobi',
+    town: 'Westlands',
+    bedrooms: '2',
+    amenities: 'wifi,parking',
+    sort: 'recently-confirmed',
+    page: '3',
+    limit: '5',
+  });
+
+  assert.ok(captured.filter['location.county'].test('Nairobi'));
+  assert.ok(captured.filter['location.town'].test('Westlands'));
+  assert.equal(captured.filter.bedrooms, 2);
+  assert.equal(captured.filter['amenities.wifi'], true);
+  assert.equal(captured.filter['amenities.parking'], true);
+  assert.deepEqual(captured.sort, { status: 1, availabilityConfirmedAt: -1, createdAt: -1, _id: -1 });
+  assert.equal(captured.skip, 10);
+  assert.equal(captured.limit, 5);
+  assert.deepEqual(result.pagination, {
+    page: 3,
+    limit: 5,
+    total: 13,
+    totalPages: 3,
+    hasNextPage: false,
+    hasPrevPage: true,
+  });
+});
+
+test('public property search supports newest sorting and validates filter values', async () => {
+  const captured = mockPropertyList();
+
+  await listProperties({ sort: 'newest' });
+  assert.deepEqual(captured.sort, { createdAt: -1, _id: -1 });
+
+  await assert.rejects(
+    listProperties({ sort: 'oldest' }),
+    error => error.status === 400
+  );
+  await assert.rejects(
+    listProperties({ amenities: 'notAnAmenity' }),
+    error => error.status === 400
+  );
+  await assert.rejects(
+    listProperties({ bedrooms: '1.5' }),
+    error => error.status === 400
+  );
 });
 
 test('landlord cannot delete a property with booking history', async () => {
@@ -206,6 +294,7 @@ test('landlord can update availability only for their own approved listing', asy
   );
 
   assert.equal(result.property.status, 'AVAILABLE');
+  assert.ok(property.availabilityConfirmedAt instanceof Date);
   assert.equal(updateFilter.owner, 'landlord-1');
   assert.equal(updateFilter.isApproved, true);
 });
@@ -234,6 +323,103 @@ test('landlord cannot update another owner or set a non-availability status', as
       { status: 'HIDDEN' }
     ),
     error => error.status === 409
+  );
+});
+
+test('landlord can confirm an approved available listing', async () => {
+  const property = {
+    _id: 'landlord-property',
+    owner: 'landlord-1',
+    status: 'AVAILABLE',
+    isApproved: true,
+  };
+  let findByIdCount = 0;
+  let updateFilter;
+  let updateFields;
+  Property.findById = id => {
+    findByIdCount += 1;
+    if (findByIdCount === 1) return Promise.resolve(property);
+    return {
+      populate: () => ({
+        lean: async () => ({ id, status: property.status, availabilityConfirmedAt: updateFields.availabilityConfirmedAt }),
+      }),
+    };
+  };
+  Property.findOneAndUpdate = async (filter, update) => {
+    updateFilter = filter;
+    updateFields = update.$set;
+    Object.assign(property, updateFields);
+    return property;
+  };
+  Booking.exists = async () => null;
+
+  const result = await confirmPropertyAvailability(
+    property._id,
+    { id: 'landlord-1', role: 'LANDLORD' }
+  );
+
+  assert.equal(updateFilter.owner, 'landlord-1');
+  assert.equal(updateFilter.isApproved, true);
+  assert.equal(updateFilter.status, 'AVAILABLE');
+  assert.ok(updateFields.availabilityConfirmedAt instanceof Date);
+  assert.equal(result.property.availabilityConfirmedAt.getTime(), updateFields.availabilityConfirmedAt.getTime());
+});
+
+test('landlord cannot confirm another landlord listing', async () => {
+  Property.findById = async () => ({
+    _id: 'landlord-property',
+    owner: 'landlord-1',
+    status: 'AVAILABLE',
+    isApproved: true,
+  });
+
+  await assert.rejects(
+    confirmPropertyAvailability(
+      'landlord-property',
+      { id: 'landlord-2', role: 'LANDLORD' }
+    ),
+    error => error.status === 403
+  );
+});
+
+test('availability confirmation rejects taken or unapproved listings', async () => {
+  const property = {
+    _id: 'landlord-property',
+    owner: 'landlord-1',
+    status: 'OCCUPIED',
+    isApproved: true,
+  };
+  Property.findById = async () => property;
+
+  await assert.rejects(
+    confirmPropertyAvailability(
+      property._id,
+      { id: 'landlord-1', role: 'LANDLORD' }
+    ),
+    error => error.status === 409
+  );
+});
+
+test('availability confirmation is blocked by an active confirmed booking', async () => {
+  const property = {
+    _id: 'landlord-property',
+    owner: 'landlord-1',
+    status: 'AVAILABLE',
+    isApproved: true,
+  };
+  Property.findById = async () => property;
+  Booking.exists = async () => ({ _id: 'booking-1' });
+
+  await assert.rejects(
+    confirmPropertyAvailability(
+      property._id,
+      { id: 'landlord-1', role: 'LANDLORD' }
+    ),
+    error => {
+      assert.equal(error.status, 409);
+      assert.match(error.message, /active confirmed booking/);
+      return true;
+    }
   );
 });
 

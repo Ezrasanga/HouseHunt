@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
 	approveProperty,
 	createProperty,
+	confirmPropertyAvailability,
 	deleteProperty,
 	featureProperty,
 	getProperties,
@@ -101,6 +102,7 @@ export default function useProperties({ limit = 12, query = {} } = {}) {
 		removeProperty,
 		updateProperty: async (id, payload) => replaceProperty(await updateProperty(id, payload)),
 		approveProperty: async (id, isApproved) => replaceProperty(await approveProperty(id, isApproved)),
+		confirmPropertyAvailability: async id => replaceProperty(await confirmPropertyAvailability(id)),
 		updatePropertyStatus: async (id, status) => replaceProperty(await updatePropertyStatus(id, status)),
 		featureProperty: async (id, featured) => replaceProperty(await featureProperty(id, featured)),
 		normalizeProperty,

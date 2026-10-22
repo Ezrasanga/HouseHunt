@@ -24,6 +24,7 @@ router.patch('/:id', requireAuth, propertyController.update);
 router.delete('/:id', requireAuth, propertyController.remove);
 router.patch('/:id/approve', requireAuth, authorize('ADMIN'), propertyController.approve);
 router.patch('/:id/status', requireAuth, authorize('ADMIN', 'LANDLORD'), propertyController.updateStatus);
+router.post('/:id/confirm-availability', requireAuth, authorize('LANDLORD'), propertyController.confirmAvailability);
 router.patch('/:id/feature', requireAuth, authorize('ADMIN'), propertyController.feature);
 
 export default router;

@@ -111,6 +111,22 @@ export async function updateStatus(req, res) {
   }
 }
 
+export async function confirmAvailability(req, res) {
+  try {
+    const result = await propertyService.confirmPropertyAvailability(req.params.id, req.user);
+    await recordAuditEvent({
+      actor: req.user,
+      action: 'Property availability confirmed',
+      description: 'Confirmed that a property listing is still available',
+      resourceType: 'property',
+      resourceId: req.params.id,
+    });
+    return sendResponse(res, 200, true, 'Property availability confirmed successfully', result, []);
+  } catch (err) {
+    return handleError(res, err);
+  }
+}
+
 export async function feature(req, res) {
   try {
     const result = await propertyService.featureProperty(req.params.id, req.user, req.body);

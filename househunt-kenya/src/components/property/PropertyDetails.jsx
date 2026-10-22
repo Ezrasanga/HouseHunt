@@ -1,5 +1,6 @@
 import Badge from "../common/Badge";
 import Icon from "../common/Icon";
+import { formatAvailabilityConfirmation } from "../../utils/availability";
 
 export default function PropertyDetails({
   liveProp,
@@ -66,6 +67,7 @@ export default function PropertyDetails({
               <div><span>Listing ID</span><strong>{liveProp.id}</strong></div>
               <div><span>Landlord</span><strong>{landlord ? landlord.name : liveProp.landlordId}</strong></div>
               <div><span>Status</span><strong>{isAvailable ? "Available" : "Taken"}</strong></div>
+              {isAvailable && <div><span>Availability last confirmed</span><strong>{formatAvailabilityConfirmation(liveProp.availabilityConfirmedAt)}</strong></div>}
               <div><span>Media files</span><strong>{liveProp.media?.length || 0}</strong></div>
             </div>
           </div>

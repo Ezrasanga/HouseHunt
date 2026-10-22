@@ -103,6 +103,10 @@ const propertySchema = new mongoose.Schema(
       default: 'PENDING',
       index: true,
     },
+    availabilityConfirmedAt: {
+      type: Date,
+      default: null,
+    },
     owner: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

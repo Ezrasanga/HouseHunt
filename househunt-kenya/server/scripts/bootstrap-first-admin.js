@@ -14,33 +14,33 @@ dotenv.config({ path: resolve(serverDirectory, '.env') });
 const lockId = 'first-admin';
 const lockCollectionName = 'adminBootstrapLocks';
 
-async function promptLine(message) {
-  const input = createInterface({ input: stdin, output: stdout });
+async function promptLine(message, inputStream = stdin, outputStream = stdout) {
+  const lineInterface = createInterface({ input: inputStream, output: outputStream });
   try {
-    return await input.question(message);
+    return await lineInterface.question(message);
   } finally {
-    input.close();
+    lineInterface.close();
   }
 }
 
-function promptHidden(message) {
-  if (!stdin.isTTY || typeof stdin.setRawMode !== 'function') {
+function promptHidden(message, inputStream = stdin, outputStream = stdout) {
+  if (!inputStream.isTTY || typeof inputStream.setRawMode !== 'function') {
     throw new Error('Run this command from an interactive terminal so the password can be hidden.');
   }
 
-  emitKeypressEvents(stdin);
-  stdout.write(message);
-  stdin.setRawMode(true);
-  stdin.resume();
+  emitKeypressEvents(inputStream);
+  outputStream.write(message);
+  inputStream.setRawMode(true);
+  inputStream.resume();
 
   return new Promise((resolvePrompt, rejectPrompt) => {
     let value = '';
 
     const cleanup = () => {
-      stdin.off('keypress', onKeypress);
-      stdin.setRawMode(false);
-      stdin.pause();
-      stdout.write('\n');
+      inputStream.off('keypress', onKeypress);
+      inputStream.setRawMode(false);
+      inputStream.pause();
+      outputStream.write('\n');
     };
 
     const onKeypress = (character, key = {}) => {
@@ -66,21 +66,30 @@ function promptHidden(message) {
       }
     };
 
-    stdin.on('keypress', onKeypress);
+    inputStream.on('keypress', onKeypress);
   });
 }
 
-async function main() {
-  if (!stdin.isTTY || !stdout.isTTY) {
+export async function main({
+  database = mongoose,
+  userModel = User,
+  environment = process.env,
+  input = stdin,
+  output = stdout,
+  logger = console,
+  readLine = promptLine,
+  readPassword = promptHidden,
+} = {}) {
+  if (!input.isTTY || !output.isTTY) {
     throw new Error('Run this command directly in an interactive PowerShell or terminal window; piped/task input cannot confirm the database.');
   }
 
-  const mongoUri = process.env.MONGO_URI;
+  const mongoUri = environment.MONGO_URI;
   if (!mongoUri) {
     throw new Error('MONGO_URI must be configured in the server environment.');
   }
 
-  const nodeEnvironment = (process.env.NODE_ENV || 'development').toLowerCase();
+  const nodeEnvironment = (environment.NODE_ENV || 'development').toLowerCase();
   if (!['development', 'test'].includes(nodeEnvironment)) {
     throw new Error('Admin bootstrap is restricted to development and test environments.');
   }
@@ -89,22 +98,24 @@ async function main() {
   let adminCreated = false;
 
   try {
-    await mongoose.connect(mongoUri);
-    const databaseName = mongoose.connection.name;
-    console.log(`Connected database: ${databaseName}`);
+    await database.connect(mongoUri);
+    const databaseName = database.connection.name;
+    logger.log(`Connected database: ${databaseName}`);
 
-    const confirmation = await promptLine(
+    const confirmation = await readLine(
       `Type "I CONFIRM NON-PRODUCTION ${databaseName}" only if this is your test/development database: `,
+      input,
+      output,
     );
     if (confirmation !== `I CONFIRM NON-PRODUCTION ${databaseName}`) {
       throw new Error('Database confirmation did not match; no admin was created.');
     }
 
-    if (await User.exists({ role: 'ADMIN' })) {
+    if (await userModel.exists({ role: 'ADMIN' })) {
       throw new Error('An admin already exists. Use the authorized admin-management process instead.');
     }
 
-    const locks = mongoose.connection.collection(lockCollectionName);
+    const locks = database.connection.collection(lockCollectionName);
     try {
       await locks.insertOne({ _id: lockId, startedAt: new Date() });
       lockAcquired = true;
@@ -118,24 +129,24 @@ async function main() {
       throw error;
     }
 
-    if (await User.exists({ role: 'ADMIN' })) {
+    if (await userModel.exists({ role: 'ADMIN' })) {
       throw new Error('An admin was created by another process; no additional admin was created.');
     }
 
-    const firstName = (await promptLine('Admin first name: ')).trim();
-    const lastName = (await promptLine('Admin last name: ')).trim();
-    const email = (await promptLine('Admin email: ')).trim().toLowerCase();
+    const firstName = (await readLine('Admin first name: ', input, output)).trim();
+    const lastName = (await readLine('Admin last name: ', input, output)).trim();
+    const email = (await readLine('Admin email: ', input, output)).trim().toLowerCase();
 
     if (!firstName || !lastName || !/^\S+@\S+\.\S+$/.test(email)) {
       throw new Error('A first name, last name, and valid email address are required.');
     }
 
-    if (await User.exists({ email })) {
+    if (await userModel.exists({ email })) {
       throw new Error('That email already belongs to an account; existing accounts are never promoted by this script.');
     }
 
-    const password = await promptHidden('Admin password (hidden): ');
-    const passwordConfirmation = await promptHidden('Confirm admin password (hidden): ');
+    const password = await readPassword('Admin password (hidden): ', input, output);
+    const passwordConfirmation = await readPassword('Confirm admin password (hidden): ', input, output);
 
     if (password !== passwordConfirmation) {
       throw new Error('Passwords do not match.');
@@ -144,7 +155,7 @@ async function main() {
       throw new Error('Use a password between 12 and 72 UTF-8 bytes.');
     }
 
-    const admin = await User.create({
+    const admin = await userModel.create({
       firstName,
       lastName,
       email,
@@ -152,19 +163,21 @@ async function main() {
       role: 'ADMIN',
     });
     adminCreated = true;
-    console.log(`First admin created successfully (user id: ${String(admin._id)}).`);
+    logger.log(`First admin created successfully (user id: ${String(admin._id)}).`);
   } finally {
     try {
       if (lockAcquired && !adminCreated) {
-        await mongoose.connection.collection(lockCollectionName).deleteOne({ _id: lockId });
+        await database.connection.collection(lockCollectionName).deleteOne({ _id: lockId });
       }
     } finally {
-      await mongoose.disconnect();
+      await database.disconnect();
     }
   }
 }
 
-main().catch((error) => {
-  console.error(`Admin bootstrap failed: ${error.message}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(`Admin bootstrap failed: ${error.message}`);
+    process.exitCode = 1;
+  });
+}

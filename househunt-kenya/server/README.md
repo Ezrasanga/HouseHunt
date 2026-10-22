@@ -63,11 +63,28 @@ approved listing can make that change, and active confirmed bookings prevent
 marking it available. Admins can explicitly resolve disputed active bookings
 through `PATCH /api/bookings/:id/admin-resolve`, with an audit entry.
 
-Tenants and landlords arrange rent and deposits directly with each other.
-HouseHunt records interest and listing status; it does not verify leases,
-collect landlord payments, or provide refunds.
+Landlords can reconfirm an approved available listing with
+`POST /api/properties/:id/confirm-availability`. The confirmation timestamp is
+shown on listing cards and property details so tenants can assess how recently
+availability was checked. Listings that have not been confirmed show that
+status explicitly; booking completion or admin status changes do not count as a
+landlord confirmation.
+
+Tenants and landlords coordinate tenancy arrangements directly with each
+other. HouseHunt records interest and listing status; it does not verify
+arrangements, collect landlord payments, or provide refunds.
 
 Endpoints are exposed under `/api/*`.
+
+## Property discovery filters
+
+`GET /api/properties` supports `county`, `town`, `bedrooms`, and a comma-separated
+`amenities` list (`wifi`, `parking`, `water`, `electricity`, `security`,
+`balcony`, `furnished`, `petFriendly`). Multiple amenities are combined with
+AND matching. Use `sort=featured` (default), `sort=newest`, or
+`sort=recently-confirmed`; the last places available listings first and orders
+them by the latest landlord availability confirmation. Existing `page` and
+`limit` parameters continue to paginate the filtered results.
 
 ## Password recovery
 

@@ -27,6 +27,7 @@ import {
 } from "../services/paymentService";
 import { deleteUser, getUsers, updateUserStatus } from "../services/userService";
 import Navbar from "../components/layout/Navbar";
+import Footer from "../components/layout/Footer";
 import Hero from "../components/layout/Hero";
 import SearchBar from "../components/layout/SearchBar";
 import PropertyGrid from "../components/property/PropertyGrid";
@@ -40,6 +41,7 @@ import EmptyState from "../components/common/EmptyState";
 import Modal from "../components/common/Modal";
 import Pagination from "../components/common/Pagination";
 import Toast from "../components/common/Toast";
+import { formatAvailabilityConfirmation } from "../utils/availability";
 import "../styles/app.css";
 
 // ── MODERATION ────────────────────────────────────────────────────────────────
@@ -64,9 +66,36 @@ const bookingLocation = location => {
     .join(", ");
 };
 const propertyTypeForApi = type => type === "House" || type === "Penthouse" ? "Apartment" : type === "Room" ? "Single Room" : type;
-const propertySearchQuery = (search, budget, type, page) => {
+const amenityOptions = [
+  ["wifi", "Wi-Fi"],
+  ["parking", "Parking"],
+  ["water", "Water"],
+  ["electricity", "Electricity"],
+  ["security", "Security"],
+  ["balcony", "Balcony"],
+  ["furnished", "Furnished"],
+  ["petFriendly", "Pet friendly"],
+];
+const emptyAmenitySelection = () => Object.fromEntries(amenityOptions.map(([key]) => [key, false]));
+const emptyPropertyForm = () => ({
+  title: "",
+  location: "",
+  rent: "",
+  rooms: "",
+  rules: "",
+  type: "Apartment",
+  tags: "",
+  amenities: emptyAmenitySelection(),
+});
+const amenityTagKey = value => String(value || "").toLowerCase().replace(/[^a-z]/g, "");
+const propertySearchQuery = (search, budget, type, page, filters) => {
   const query = { page, search: search.trim() };
   if (type) query.propertyType = type;
+  if (filters.county.trim()) query.county = filters.county.trim();
+  if (filters.town.trim()) query.town = filters.town.trim();
+  if (filters.bedrooms !== "") query.bedrooms = filters.bedrooms;
+  if (filters.amenities.length) query.amenities = filters.amenities.join(",");
+  if (filters.sort !== "featured") query.sort = filters.sort;
   if (budget === "low") query.maxPrice = 14999;
   if (budget === "mid") {
     query.minPrice = 15000;
@@ -81,8 +110,10 @@ const propertyPayload = (form, media) => {
   const bedroomMatch = rooms.match(/(\d+)\s*bed/i);
   const bathroomMatch = rooms.match(/(\d+)\s*bath/i);
   const description = [form.rules, rooms].filter(Boolean).join(" ").trim() || `${form.title} property listing.`;
-  const tags = form.tags ? form.tags.split(",").map(tag => tag.trim().toLowerCase()).filter(Boolean) : [];
-  const amenityNames = ["wifi", "parking", "water", "electricity", "security", "balcony", "furnished", "petFriendly"];
+  const tags = form.tags ? form.tags.split(",").map(tag => amenityTagKey(tag.trim())).filter(Boolean) : [];
+  const amenities = form.amenities || Object.fromEntries(
+    amenityOptions.map(([key]) => [key, tags.includes(amenityTagKey(key))])
+  );
 
   return {
     title: form.title,
@@ -96,7 +127,7 @@ const propertyPayload = (form, media) => {
     },
     bedrooms: Number(bedroomMatch?.[1] || 0),
     bathrooms: Number(bathroomMatch?.[1] || 0),
-    amenities: Object.fromEntries(amenityNames.map(name => [name, tags.includes(name.toLowerCase())])),
+    amenities: Object.fromEntries(amenityOptions.map(([key]) => [key, Boolean(amenities[key])])),
     images: media.filter(item => item.type === "image" && !item.url.startsWith("blob:")).map(item => item.url),
   };
 };
@@ -126,10 +157,16 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [search, setSearch] = useState("");
   const [budget, setBudget] = useState("");
   const [ptype, setPtype] = useState("");
+  const [county, setCounty] = useState("");
+  const [town, setTown] = useState("");
+  const [bedrooms, setBedrooms] = useState("");
+  const [amenities, setAmenities] = useState([]);
+  const [sort, setSort] = useState("featured");
   const [propertyPage, setPropertyPage] = useState(1);
+  const propertyFilters = { county, town, bedrooms, amenities, sort };
   const publicPropertyQuery = user?.role === "admin" || user?.role === "landlord"
     ? {}
-    : propertySearchQuery(search, budget, ptype, propertyPage);
+    : propertySearchQuery(search, budget, ptype, propertyPage, propertyFilters);
   const {
     properties: props,
     pagination: propertyPagination,
@@ -141,6 +178,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     removeProperty,
     updateProperty: updatePropertyApi,
     approveProperty: approvePropertyApi,
+    confirmPropertyAvailability: confirmPropertyAvailabilityApi,
     updatePropertyStatus: updatePropertyStatusApi,
     featureProperty: featurePropertyApi,
   } = useProperties({
@@ -208,7 +246,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [bookingConflictId, setBookingConflictId] = useState("");
   const [pendMedia, setPendMedia] = useState([]);
   const [dragOv, setDragOv] = useState(false);
-  const [form, setForm] = useState({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});
+  const [form, setForm] = useState(emptyPropertyForm);
   const [editingProperty, setEditingProperty] = useState(null);
   const [profileForm, setProfileForm] = useState(() => profileFields(user));
   const [cwarn, setCwarn] = useState(false);
@@ -227,6 +265,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [formError, setFormError] = useState("");
   const [formInvalid, setFormInvalid] = useState({});
   const [propLoading, setPropLoading] = useState(false);
+  const [availabilityConfirmingId, setAvailabilityConfirmingId] = useState("");
   const [payLoading, setPayLoading] = useState(false);
   const [annLoading, setAnnLoading] = useState(false);
   const [adminListingLoading, setAdminListingLoading] = useState(false);
@@ -476,6 +515,35 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const updateSearch = value => { setSearch(value); setPropertyPage(1); };
   const updateBudget = value => { setBudget(value); setPropertyPage(1); };
   const updatePropertyType = value => { setPtype(value); setPropertyPage(1); };
+  const updateCounty = value => { setCounty(value); setPropertyPage(1); };
+  const updateTown = value => { setTown(value); setPropertyPage(1); };
+  const updateBedrooms = value => { setBedrooms(value); setPropertyPage(1); };
+  const updateAmenities = value => {
+    setAmenities(current => current.includes(value) ? current.filter(item => item !== value) : [...current, value]);
+    setPropertyPage(1);
+  };
+  const updateSort = value => { setSort(value); setPropertyPage(1); };
+  const clearPropertyFilters = () => {
+    setSearch("");
+    setBudget("");
+    setPtype("");
+    setCounty("");
+    setTown("");
+    setBedrooms("");
+    setAmenities([]);
+    setSort("featured");
+    setPropertyPage(1);
+  };
+  const removePropertyFilter = key => {
+    if (key === "search") updateSearch("");
+    else if (key === "budget") updateBudget("");
+    else if (key === "type") updatePropertyType("");
+    else if (key === "county") updateCounty("");
+    else if (key === "town") updateTown("");
+    else if (key === "bedrooms") updateBedrooms("");
+    else if (key === "sort") updateSort("featured");
+    else if (key.startsWith("amenity:")) updateAmenities(key.slice("amenity:".length));
+  };
   const switchAuthMode = mode => {
     setAuthF(current => ({name:"",email:current.email,password:"",mode}));
     setAuthErr("");
@@ -545,10 +613,10 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
   const sorted = [...props]
     .filter(p => user?.role==="admin" ? true : p.approved!==false)
-    .sort((a,b) => (b.boosted?1:0)-(a.boosted?1:0));
+    .sort((a,b) => sort === "featured" ? (b.boosted?1:0)-(a.boosted?1:0) : 0);
 
   const filtered = sorted;
-  const featuredProps = propertyPage === 1 ? filtered.filter(p=>p.boosted).slice(0,4) : [];
+  const featuredProps = propertyPage === 1 && sort === "featured" ? filtered.filter(p=>p.boosted).slice(0,4) : [];
   const featuredIds = new Set(featuredProps.map(property => property.id));
   const remainingProps = filtered.filter(property => !featuredIds.has(property.id));
 
@@ -685,6 +753,18 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       .catch(error => msg(error.response?.data?.message || error.message, "err"));
   };
 
+  const confirmAvailability = async id => {
+    setAvailabilityConfirmingId(id);
+    try {
+      await confirmPropertyAvailabilityApi(id);
+      msg("Availability confirmation updated.", "ok");
+    } catch (error) {
+      msg(error.response?.data?.message || error.message, "err");
+    } finally {
+      setAvailabilityConfirmingId("");
+    }
+  };
+
   const adminVerify = id => {
     updatePropertyStatusApi(id, "OCCUPIED")
       .then(() => {
@@ -772,7 +852,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       } else {
         await addProperty(propertyPayload(form, pendMedia));
       }
-      setForm({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});
+      setForm(emptyPropertyForm());
       setPendMedia([]); setCwarn(false); setEditingProperty(null);
       msg(editingProperty ? "Listing updated." : "Submitted for review.","ok");
       setLdTab("mylistings");
@@ -844,6 +924,12 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       rules: property.rules || "",
       type: property.type || "Apartment",
       tags: (property.tags || []).join(", "),
+      amenities: property.amenities || Object.fromEntries(
+        amenityOptions.map(([key]) => [
+          key,
+          (property.tags || []).some(tag => amenityTagKey(tag) === amenityTagKey(key)),
+        ])
+      ),
     });
     setPendMedia(property.media || []);
     setFormError("");
@@ -1381,9 +1467,20 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         <div className="page">
           <div className="home-search-head">
             <div className="sh"><div className="shey">Browse homes</div><div className="shtt">Find your next home</div></div>
-            <button className="bghost" onClick={() => { updateSearch(""); updateBudget(""); updatePropertyType(""); }}>Clear filters</button>
+            <button className="bghost" onClick={clearPropertyFilters}>Clear filters</button>
           </div>
-          <SearchBar search={search} setSearch={updateSearch} budget={budget} setBudget={updateBudget} ptype={ptype} setPtype={updatePropertyType} onSearch={() => document.getElementById("home-results")?.scrollIntoView({ behavior: "smooth", block: "start" })} />
+          <SearchBar
+            search={search} setSearch={updateSearch}
+            budget={budget} setBudget={updateBudget}
+            ptype={ptype} setPtype={updatePropertyType}
+            county={county} setCounty={updateCounty}
+            town={town} setTown={updateTown}
+            bedrooms={bedrooms} setBedrooms={updateBedrooms}
+            amenities={amenities} toggleAmenity={updateAmenities}
+            sort={sort} setSort={updateSort}
+            onRemoveFilter={removePropertyFilter} onClearFilters={clearPropertyFilters}
+            onSearch={() => document.getElementById("home-results")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+          />
           {propertiesLoading && <PropertySkeletons />}
           {!propertiesLoading && !propertiesError && <>
             {featuredProps.length > 0 && <>
@@ -1395,7 +1492,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               <span className="result-count">{propertyPagination?.total ?? filtered.length} {(propertyPagination?.total ?? filtered.length) === 1 ? "home" : "homes"}</span>
             </div>
             {remainingProps.length === 0
-              ? <div className="noresult"><h3>{filtered.length === 0 ? "No listings found" : "You are viewing all matching featured listings"}</h3><p>{filtered.length === 0 ? "Try adjusting your filters or clear the search to see all available homes." : "Try another search to discover more homes."}</p>{filtered.length === 0 && <button onClick={() => { setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>}</div>
+              ? <div className="noresult"><h3>{filtered.length === 0 ? "No listings found" : "You are viewing all matching featured listings"}</h3><p>{filtered.length === 0 ? "Try adjusting your filters or clear the search to see all available homes." : "Try another search to discover more homes."}</p>{filtered.length === 0 && <button onClick={clearPropertyFilters}>Clear filters</button>}</div>
               : <PropertyGrid properties={remainingProps} onView={openProperty} user={user} onDel={deleteProp} favorites={favorites} onToggleFavorite={toggleFavorite} />}
             <PropertyPagination pagination={propertyPagination} loading={propertiesLoading} onPageChange={setPropertyPage} />
           </>}
@@ -1413,7 +1510,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                   <div className="shey">Tenant Dashboard</div>
                   <div className="shtt">Your home search, unlocks and latest activity</div>
                 </div>
-                <button className="bp" style={{height:"42px"}} onClick={()=>{ setSearch(""); setBudget(""); setPtype(""); }}>Clear filters</button>
+                <button className="bp" style={{height:"42px"}} onClick={clearPropertyFilters}>Clear filters</button>
               </div>
               <div className="tkpis">
                 <div className="tkpi">
@@ -1485,7 +1582,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                               return <span key={step} className={index <= activeStep ? "complete" : ""}>{step}</span>;
                             })}
                           </div>
-                          {booking.status === "APPROVED" && <div className="arow-meta">The listing is marked taken. Arrange rent and any deposit directly with the landlord; HouseHunt does not collect them.</div>}
+                          {booking.status === "APPROVED" && <div className="arow-meta">The listing is marked taken. Coordinate next steps directly with the landlord.</div>}
                           {["CANCELLED", "REJECTED", "COMPLETED"].includes(booking.status) && (
                             <div className="arow-meta">Journey ended: {bookingStatusLabel(booking.status)}.</div>
                           )}
@@ -1506,13 +1603,23 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             </>
           )}
           <div className="sh"><div className="shey">Browse listings</div><div className="shtt">Find Your Home</div></div>
-          <SearchBar search={search} setSearch={updateSearch} budget={budget} setBudget={updateBudget} ptype={ptype} setPtype={updatePropertyType} />
+          <SearchBar
+            search={search} setSearch={updateSearch}
+            budget={budget} setBudget={updateBudget}
+            ptype={ptype} setPtype={updatePropertyType}
+            county={county} setCounty={updateCounty}
+            town={town} setTown={updateTown}
+            bedrooms={bedrooms} setBedrooms={updateBedrooms}
+            amenities={amenities} toggleAmenity={updateAmenities}
+            sort={sort} setSort={updateSort}
+            onRemoveFilter={removePropertyFilter} onClearFilters={clearPropertyFilters}
+          />
           {propertiesLoading
             ? <PropertySkeletons />
             : propertiesError
             ? <div className="form-error" role="alert">Unable to load tenant properties: {propertiesError} <button type="button" className="bghost" onClick={refreshProperties}>Retry</button></div>
             : filtered.length===0
-            ? <div className="noresult"><h3>No listings found</h3><p>There are no homes matching these filters right now.</p><div className="empty-actions"><button onClick={() => { updateSearch(""); updateBudget(""); updatePropertyType(""); }}>Clear filters</button><button onClick={() => { updateSearch(""); updateBudget(""); updatePropertyType(""); setTab("home"); }}>Browse all homes</button></div></div>
+            ? <div className="noresult"><h3>No listings found</h3><p>There are no homes matching these filters right now.</p><div className="empty-actions"><button onClick={clearPropertyFilters}>Clear filters</button><button onClick={() => { clearPropertyFilters(); setTab("home"); }}>Browse all homes</button></div></div>
             : <PropertyGrid
                 properties={filtered}
                 onView={openProperty}
@@ -1586,7 +1693,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                       <span className={`sbadge ${bookingStatusTone(booking.status)}`}>{bookingStatusLabel(booking.status)}</span>
                       {booking.status === "PENDING" && (
                         <>
-                          <button className="bapp" onClick={()=>handleApproveBooking(booking.id)}>Confirm rented · mark taken</button>
+                          <button className="bapp" onClick={()=>handleApproveBooking(booking.id)}>Confirm arrangement · mark taken</button>
                           <button className="bdel" onClick={()=>handleRejectBooking(booking.id)}>Reject</button>
                         </>
                       )}
@@ -1759,7 +1866,25 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                   <div className="fg"><label htmlFor="listing-type">Property Type</label><select id="listing-type" value={form.type} onChange={e=>setForm({...form,type:e.target.value})} disabled={propLoading}>{["Bedsitter","Room","Apartment","House","Penthouse"].map(t=><option key={t}>{t}</option>)}</select></div>
                 </div>
                 <div className="fg"><label htmlFor="listing-rooms">Bedrooms & Facilities</label><input id="listing-rooms" placeholder="2 Bed · 1 Bath · DSQ" value={form.rooms} onChange={e=>setForm({...form,rooms:e.target.value})} disabled={propLoading}/></div>
-                <div className="fg"><label htmlFor="listing-tags">Amenity Tags (comma-separated)</label><input id="listing-tags" placeholder="WiFi, Parking, Security" value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})} disabled={propLoading}/></div>
+                <fieldset className="listing-amenities" disabled={propLoading}>
+                  <legend>Property amenities</legend>
+                  <p>Select the features available at this property.</p>
+                  <div className="listing-amenity-options">
+                    {amenityOptions.map(([key, label]) => (
+                      <label key={key}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(form.amenities?.[key])}
+                          onChange={event => setForm(current => ({
+                            ...current,
+                            amenities: { ...current.amenities, [key]: event.target.checked },
+                          }))}
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
                 <div className="fg"><label htmlFor="listing-rules">House Rules</label><textarea id="listing-rules" placeholder="No pets. 2 months deposit." value={form.rules} onChange={e=>{setForm({...form,rules:e.target.value});setCwarn(false);}} disabled={propLoading}/></div>
                 {pendMedia.length>0 && <div style={{display:"flex",gap:6,marginBottom:"1rem",flexWrap:"wrap"}}>{pendMedia.slice(0,5).map((m,i)=>(
                   <div key={i} style={{width:50,height:38,borderRadius:6,overflow:"hidden",border:"1px solid rgba(181,69,27,0.18)"}}>
@@ -1768,7 +1893,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 ))}{pendMedia.length>5&&<div style={{width:50,height:38,borderRadius:6,background:"rgba(10,10,24,0.07)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.68rem",color:"#bbb"}}>+{pendMedia.length-5}</div>}</div>}
                 <div style={{display:"flex",gap:8}}>
                   <button type="submit" className="bp" style={{flex:1,padding:"12px"}} disabled={propLoading} aria-busy={propLoading}>{propLoading ? "Saving…" : editingProperty ? "Save Listing →" : "Post Listing Free →"}</button>
-                  {editingProperty && <button type="button" className="bghost" onClick={()=>{setEditingProperty(null);setForm({title:"",location:"",rent:"",rooms:"",rules:"",type:"Apartment",tags:""});setPendMedia([]);}} disabled={propLoading}>Cancel</button>}
+                  {editingProperty && <button type="button" className="bghost" onClick={()=>{setEditingProperty(null);setForm(emptyPropertyForm());setPendMedia([]);}} disabled={propLoading}>Cancel</button>}
                 </div>
               </form>}
 
@@ -1781,6 +1906,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     <div className="linfo">
                       <div className="ltitle">{p.title}</div>
                       <div className="lmeta">📍 {p.location} · {p.type} · {p.media?.length||0} media{p.approved===false?" · ⏳ Pending":""}</div>
+                      {p.approved && <div className="lmeta">Availability last confirmed: {formatAvailabilityConfirmation(p.availabilityConfirmedAt)}</div>}
                     </div>
                     <div className="lacts">
                       <div className="lstatus-group">
@@ -1789,6 +1915,15 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                         {p.boosted && <span className="sbadge sb-bo">⭐ Boosted</span>}
                       </div>
                       <div className="lrent">{KES(p.rent)}</div>
+                      {p.approved && p.status === "available" && (
+                        <>
+                          <button type="button" className="bghost" onClick={() => void confirmAvailability(p.id)} disabled={availabilityConfirmingId === p.id} aria-busy={availabilityConfirmingId === p.id}>
+                            {availabilityConfirmingId === p.id ? "Confirming…" : "Confirm available"}
+                          </button>
+                          <button type="button" className="bghost" onClick={() => markTaken(p.id)}>Mark taken</button>
+                        </>
+                      )}
+                      {p.approved && p.status === "taken" && <button type="button" className="bghost" onClick={() => markTaken(p.id)}>Mark available</button>}
                       {p.approved && p.status === "available" && !p.boosted && <button type="button" className="bboost" onClick={() => void openPropertyPayment({ type: "boost", propId: p.id })}>Boost listing · KSh {settings.boostFee}</button>}
                       <button className="bghost" onClick={()=>beginEditProperty(p)}>Edit</button>
                       <button className="bdel" aria-label={`Delete listing: ${p.title}`} onClick={()=>deleteProp(p.id)}>🗑</button>
@@ -2145,7 +2280,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             {n:"03",t:"Free Landlord Listing",d:"Landlords sign up and list properties for free with photos, videos, contact info, and social media links."},
             {n:"04",t:"Boost Your Listing",d:`Pay KSh ${settings.boostFee} through M-PESA to feature an approved available listing for 30 days. The boost is applied after Daraja confirms payment.`},
             {n:"05",t:"Booking & Availability",d:"A booking request records interest but does not reserve a home. The landlord confirms only after arrangements are agreed; this marks the listing taken. Landlords may also update availability for agreements made outside HouseHunt."},
-            {n:"06",t:"Payments Stay Between You",d:"HouseHunt does not collect rent, deposits, or booking payments. Tenants and landlords arrange those directly. HouseHunt payments are only for contact unlocks and optional listing boosts."},
+            {n:"06",t:"Platform Payments Only",d:"HouseHunt only processes payments for contact unlocks and optional listing boosts. Tenants and landlords coordinate all other arrangements directly."},
             {n:"07",t:"Mark Available Again",d:"When the home is vacant, both parties can confirm the booking is complete and the landlord can mark the listing available. Admins can resolve disputed availability after review."},
           ].map(s=>(
             <div key={s.n} className="gcard">
@@ -2156,6 +2291,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       </div>}
       </main>
       )}
+
+      <Footer user={user} setTab={setTab} setAuthModal={setAuthModal} />
 
       {/* ─── PROPERTY MODAL ─── */}
       {liveProp && (
