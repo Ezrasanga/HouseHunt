@@ -7,6 +7,7 @@ import propertyRouter from '../routes/properties.js';
 import {
   approveProperty,
   confirmPropertyAvailability,
+  createProperty,
   deleteProperty,
   listProperties,
   normalizeId,
@@ -117,6 +118,38 @@ test('public property search supports newest sorting and validates filter values
     listProperties({ bedrooms: '1.5' }),
     error => error.status === 400
   );
+});
+
+test('property media can only reference Cloudinary uploads owned by the listing owner', async () => {
+  const previousCloudName = globalThis.process.env.CLOUDINARY_CLOUD_NAME;
+  globalThis.process.env.CLOUDINARY_CLOUD_NAME = 'test-cloud';
+  try {
+    await assert.rejects(
+      createProperty(
+        { id: 'landlord-1', role: 'LANDLORD' },
+        { media: [{
+          url: 'https://example.com/property.jpg',
+          type: 'image',
+          publicId: 'househunt/properties/landlord-1/photo',
+        }] }
+      ),
+      error => error.status === 400
+    );
+    await assert.rejects(
+      createProperty(
+        { id: 'landlord-1', role: 'LANDLORD' },
+        { media: [{
+          url: 'https://res.cloudinary.com/test-cloud/image/upload/photo.jpg',
+          type: 'image',
+          publicId: 'househunt/properties/another-landlord/photo',
+        }] }
+      ),
+      error => error.status === 400
+    );
+  } finally {
+    if (previousCloudName === undefined) delete globalThis.process.env.CLOUDINARY_CLOUD_NAME;
+    else globalThis.process.env.CLOUDINARY_CLOUD_NAME = previousCloudName;
+  }
 });
 
 test('landlord cannot delete a property with booking history', async () => {
@@ -297,6 +330,40 @@ test('landlord can update availability only for their own approved listing', asy
   assert.ok(property.availabilityConfirmedAt instanceof Date);
   assert.equal(updateFilter.owner, 'landlord-1');
   assert.equal(updateFilter.isApproved, true);
+});
+
+test('editing a listing clears a dismissed quality-review signal', async () => {
+  const property = {
+    _id: 'listing-to-edit',
+    owner: 'landlord-1',
+    status: 'PENDING',
+    isApproved: false,
+  };
+  let findByIdCount = 0;
+  let savedFields;
+  Property.findById = id => {
+    findByIdCount += 1;
+    if (findByIdCount === 1) return Promise.resolve(property);
+    return {
+      populate: () => ({
+        lean: async () => ({ id, title: 'Updated listing' }),
+      }),
+    };
+  };
+  Booking.exists = async () => null;
+  Property.findOneAndUpdate = async (_filter, update) => {
+    savedFields = update.$set;
+    return property;
+  };
+
+  await updateProperty(
+    property._id,
+    { id: 'landlord-1', role: 'LANDLORD' },
+    { title: 'Updated listing' }
+  );
+
+  assert.equal(savedFields.qualityReviewDismissedAt, null);
+  assert.equal(savedFields.qualityReviewDismissedBy, null);
 });
 
 test('landlord cannot update another owner or set a non-availability status', async () => {

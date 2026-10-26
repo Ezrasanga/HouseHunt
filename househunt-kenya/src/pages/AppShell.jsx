@@ -4,6 +4,7 @@ import Icon from "../components/common/Icon";
 import useAuth from "../hooks/useAuth";
 import useBookings from "../hooks/useBookings";
 import useProperties from "../hooks/useProperties";
+import useSavedHomes from "../hooks/useSavedHomes";
 import { getAnnouncements } from "../services/announcementService";
 import {
   changePassword,
@@ -25,6 +26,7 @@ import {
   initiateStkPush,
   queryStkPushStatus,
 } from "../services/paymentService";
+import { uploadPropertyMedia } from "../services/mediaUploadService";
 import { deleteUser, getUsers, updateUserStatus } from "../services/userService";
 import Navbar from "../components/layout/Navbar";
 import Footer from "../components/layout/Footer";
@@ -34,7 +36,10 @@ import PropertyGrid from "../components/property/PropertyGrid";
 import PropertyPagination from "../components/property/PropertyPagination";
 import PropertyGallery from "../components/property/PropertyGallery";
 import PropertyDetails from "../components/property/PropertyDetails";
+import SavedHomes from "../components/property/SavedHomes";
 import AdminActivityLog from "../components/admin/AdminActivityLog";
+import AdminAvailabilityReports from "../components/admin/AdminAvailabilityReports";
+import AdminListingQualityReview from "../components/admin/AdminListingQualityReview";
 import PropertyActions from "../components/property/PropertyActions";
 import NotFound from "./NotFound";
 import EmptyState from "../components/common/EmptyState";
@@ -56,6 +61,7 @@ const profileFields = user => ({
 });
 
 // ── DATA ──────────────────────────────────────────────────────────────────────
+const APP_INITIALIZED_AT = Date.now();
 const KES = n=>`KSh ${Number(n).toLocaleString()}`;
 const todayStr = ()=>new Date().toISOString().split("T")[0];
 const bookingLocation = location => {
@@ -129,6 +135,7 @@ const propertyPayload = (form, media) => {
     bathrooms: Number(bathroomMatch?.[1] || 0),
     amenities: Object.fromEntries(amenityOptions.map(([key]) => [key, Boolean(amenities[key])])),
     images: media.filter(item => item.type === "image" && !item.url.startsWith("blob:")).map(item => item.url),
+    media: media.filter(item => item.publicId && !item.url.startsWith("blob:")).map(({ url, type, publicId }) => ({ url, type, publicId })),
   };
 };
 
@@ -141,17 +148,31 @@ function PropertySkeletons() {
   </div>;
 }
 
+function releaseMediaPreviews(media) {
+  media.forEach(item => {
+    if (item.file && item.url.startsWith("blob:")) URL.revokeObjectURL(item.url);
+  });
+}
+
 // ── PROP CARD COMPONENT ───────────────────────────────────────────────────────
 
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 export default function AppShell({ initialTab = "home", authMode = null, propertyId = null, notFound = false }) {
   const { user, login, register, updateProfile, logout: logoutUser, isLoading: authLoading } = useAuth();
+  const {
+    favorites,
+    loading: savedHomesLoading,
+    error: savedHomesError,
+    retry: retrySavedHomes,
+    toggleFavorite: toggleSavedHome,
+    clearSavedHomes: clearSavedHomesRequest,
+  } = useSavedHomes(user);
   const navigate = useNavigate();
   const location = useLocation();
   const tab = initialTab;
   const setTab = nextTab => {
-    const pathByTab = { home: "/", guide: "/guide", tenant: "/tenant", landlord: "/landlord", admin: "/admin" };
+    const pathByTab = { home: "/", guide: "/guide", tenant: "/tenant", saved: "/saved", landlord: "/landlord", admin: "/admin" };
     navigate(pathByTab[nextTab] || "/");
   };
   const [search, setSearch] = useState("");
@@ -274,10 +295,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [admListF, setAdmListF] = useState({title:"",location:"",rent:"",rooms:"",type:"Apartment",rules:"",tags:""});
   const [admMedia, setAdmMedia] = useState([]);
   const [settings, setSettings] = useState({boostFee:200,unlockFee:100,requireApproval:false});
-  const [favorites, setFavorites] = useState(() => {
-    if (typeof window === "undefined") return [];
-    try { return JSON.parse(window.localStorage.getItem("househunt-favorites") || "[]"); } catch { return []; }
-  });
   const fileRef = useRef();
   const admFileRef = useRef();
   const modalRef = useRef(null);
@@ -364,6 +381,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   useEffect(() => {
     const titles = {
       home: "Find a Home",
+      saved: "Saved Homes",
       guide: "How It Works",
       tenant: "Tenant Dashboard",
       landlord: "Landlord Dashboard",
@@ -625,6 +643,26 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const myTaken = myProps.filter(p=>p.status==="taken");
   const myBoosted = myProps.filter(p=>p.boosted);
   const myPending = myProps.filter(p=>p.approved===false);
+  const landlordDashboardNow = APP_INITIALIZED_AT;
+  const availabilityReminderMs = 30 * 24 * 60 * 60 * 1000;
+  const boostReminderMs = 7 * 24 * 60 * 60 * 1000;
+  const myAvailabilityDue = myProps.filter(property => {
+    if (!property.approved || property.status !== "available") return false;
+    const confirmedAt = property.availabilityConfirmedAt ? new Date(property.availabilityConfirmedAt).getTime() : NaN;
+    return !Number.isFinite(confirmedAt) || landlordDashboardNow - confirmedAt >= availabilityReminderMs;
+  });
+  const myBoostsExpiring = myProps.filter(property => {
+    if (!property.boosted || !property.featuredUntil) return false;
+    const expiresAt = new Date(property.featuredUntil).getTime();
+    return Number.isFinite(expiresAt) && expiresAt > landlordDashboardNow && expiresAt - landlordDashboardNow <= boostReminderMs;
+  });
+  const myListingsNeedingDetails = myProps.map(property => {
+    const missingDetails = [];
+    if ((property.description || property.rules || "").trim().length < 80) missingDetails.push("Add more description");
+    if (!property.media?.length) missingDetails.push("Add photos");
+    if (!property.locationDetails?.estate) missingDetails.push("Add estate or neighbourhood");
+    return { property, missingDetails };
+  }).filter(item => item.missingDetails.length > 0);
   const isUnlocked = id => user?.role === "tenant" && unlockedPropertyIds.includes(id);
   const tenantUnlockedProps = user?.role==="tenant" ? props.filter(p=>isUnlocked(p.id)) : [];
   const unlockedRent = tenantUnlockedProps.reduce((sum,p)=>sum+p.rent,0);
@@ -719,11 +757,24 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
   const logout = () => { clearAdminCollections(); logoutUser(); setTab("home"); msg("Signed out.","info"); };
   const toggleFavorite = id => {
-    setFavorites(current => {
-      const next = current.includes(id) ? current.filter(item => item !== id) : [...current, id];
-      window.localStorage.setItem("househunt-favorites", JSON.stringify(next));
-      return next;
-    });
+    void toggleSavedHome(id).catch(error => msg(error.message || "Could not update saved homes.", "err"));
+  };
+  const shareProperty = async property => {
+    const url = new URL(`/property/${encodeURIComponent(property.id)}`, window.location.origin).toString();
+    const shareData = { title: property.title, text: `Take a look at ${property.title} on HouseHunt Kenya.`, url };
+    try {
+      if (navigator.share) {
+        await navigator.share(shareData);
+        return;
+      }
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Sharing is not available in this browser.");
+      }
+      await navigator.clipboard.writeText(url);
+      msg("Listing link copied. You can share it with anyone.", "ok");
+    } catch (error) {
+      if (error.name !== "AbortError") msg(error.message || "Could not share this listing.", "err");
+    }
   };
 
   // PROPERTY CRUD
@@ -756,7 +807,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const confirmAvailability = async id => {
     setAvailabilityConfirmingId(id);
     try {
-      await confirmPropertyAvailabilityApi(id);
+      const updatedProperty = await confirmPropertyAvailabilityApi(id);
+      if (selProp?.id === id) setSelProp(updatedProperty);
       msg("Availability confirmation updated.", "ok");
     } catch (error) {
       msg(error.response?.data?.message || error.message, "err");
@@ -847,11 +899,19 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
     setPropLoading(true);
     try {
-      if (editingProperty) {
-        await updatePropertyApi(editingProperty.id, propertyPayload(form, pendMedia));
-      } else {
-        await addProperty(propertyPayload(form, pendMedia));
+      const mediaToSave = [...pendMedia];
+      for (let index = 0; index < mediaToSave.length; index += 1) {
+        if (!mediaToSave[index].file) continue;
+        const uploadedMedia = await uploadPropertyMedia(mediaToSave[index].file);
+        mediaToSave[index] = uploadedMedia;
+        setPendMedia([...mediaToSave]);
       }
+      if (editingProperty) {
+        await updatePropertyApi(editingProperty.id, propertyPayload(form, mediaToSave));
+      } else {
+        await addProperty(propertyPayload(form, mediaToSave));
+      }
+      releaseMediaPreviews(pendMedia);
       setForm(emptyPropertyForm());
       setPendMedia([]); setCwarn(false); setEditingProperty(null);
       msg(editingProperty ? "Listing updated." : "Submitted for review.","ok");
@@ -939,11 +999,27 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   };
 
   const handleFiles = (files, setter) => {
-    Array.from(files).forEach(f=>{
-      if(!f.type.startsWith("image/")&&!f.type.startsWith("video/")) return;
-      const url=URL.createObjectURL(f);
-      (setter||setPendMedia)(l=>[...l,{url,type:f.type.startsWith("video/")?"video":"image",name:f.name}]);
-    });
+    const selectedFiles = Array.from(files || []);
+    const validFiles = selectedFiles.filter(file => (
+      ["image/jpeg", "image/png", "image/webp", "image/avif", "video/mp4", "video/webm", "video/quicktime"].includes(file.type)
+      && file.size <= 50 * 1024 * 1024
+    ));
+    if (validFiles.length !== selectedFiles.length) {
+      msg("Choose JPEG, PNG, WebP, or AVIF photos, or MP4, WebM, or MOV videos up to 50 MB each.", "err");
+    }
+    const addToMedia = setter || setPendMedia;
+    const currentMedia = setter ? admMedia : pendMedia;
+    const remainingSlots = Math.max(0, 20 - currentMedia.length);
+    if (validFiles.length > remainingSlots) msg("A listing can have up to 20 photos and videos.", "err");
+    addToMedia(current => [
+      ...current,
+      ...validFiles.slice(0, remainingSlots).map(file => ({
+        url: URL.createObjectURL(file),
+        type: file.type.startsWith("video/") ? "video" : "image",
+        name: file.name,
+        file,
+      })),
+    ]);
   };
 
   const openPropertyPayment = async ({ type, propId }) => {
@@ -1401,6 +1477,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       <Navbar
         tab={tab}
         setTab={setTab}
+        favoritesCount={favorites.length}
         user={user}
         logout={logout}
         setAuthModal={setAuthModal}
@@ -1419,7 +1496,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
       ) : (
       <main id="main-content" ref={mainRef}>
       {tab !== "home" && <h1 className="sr-only" tabIndex={-1}>
-        {tab === "guide" ? "How HouseHunt Kenya Works" : tab === "tenant" ? "Find a Home" : tab === "landlord" ? "Landlord Dashboard" : "Admin Dashboard"}
+        {tab === "guide" ? "How HouseHunt Kenya Works" : tab === "tenant" ? "Find a Home" : tab === "saved" ? "Saved Homes" : tab === "landlord" ? "Landlord Dashboard" : "Admin Dashboard"}
       </h1>}
       {/* ANN BAR */}
       {tenantAnnouncements.length>0 && tab!=="admin" && (
@@ -1632,6 +1709,20 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         </div>
       )}
 
+      {activeTab==="saved" && (
+        <SavedHomes
+          favorites={favorites}
+          onToggleFavorite={toggleFavorite}
+          onView={openProperty}
+          onBrowse={() => setTab("home")}
+          user={user}
+          loadingSavedHomes={savedHomesLoading}
+          savedHomesError={savedHomesError}
+          onRetrySavedHomes={retrySavedHomes}
+          onClearSavedHomes={clearSavedHomesRequest}
+        />
+      )}
+
       {/* ─── LANDLORD DASHBOARD ─── */}
           {activeTab==="landlord" && user?.role==="landlord" && propertiesLoading && props.length===0 && (
             <div className="page"><PropertySkeletons /></div>
@@ -1648,7 +1739,10 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 <div className="lhero-title">Welcome back, {landFirstName}</div>
                 <p>Manage your portfolio, monitor listing performance, and keep tenant leads moving.</p>
               </div>
-              <div className="lhero-note">Your active portfolio is shown below. Review listing status, edit details, or update your saved phone number.</div>
+              <div className="lhero-actions">
+                <button type="button" className="bghost" onClick={()=>{setLdTab("listing");document.getElementById("landlord-dashboard-workspace")?.scrollIntoView({behavior:"smooth",block:"start"});}}>Add a listing</button>
+                <button type="button" className="bghost" onClick={()=>document.getElementById("landlord-booking-requests")?.scrollIntoView({behavior:"smooth",block:"start"})}>Review booking requests</button>
+              </div>
             </div>
             <div className="lkpis">
               <div className="lkpi"><span>{myProps.length}</span><strong>Listings</strong></div>
@@ -1659,7 +1753,71 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             </div>
           </div>
 
-          <div className="fcard" style={{marginBottom:"1.5rem"}}>
+          <section className="landlord-priority" aria-labelledby="landlord-priority-heading">
+            <div className="landlord-priority-heading">
+              <div>
+                <h3 id="landlord-priority-heading">Priority actions</h3>
+                <p>Stay current and make each listing easier for tenants to assess.</p>
+              </div>
+              <span>Availability check due every 30 days · Boost reminder within 7 days of expiry</span>
+            </div>
+            <div className="landlord-priority-grid">
+              <article className="landlord-priority-card">
+                <div className="landlord-priority-card-head">
+                  <div><h4>Availability checks</h4><strong>{myAvailabilityDue.length}</strong></div>
+                  <span aria-hidden="true">↻</span>
+                </div>
+                <p>Confirm available listings that have never been checked or are due for an update.</p>
+                {myAvailabilityDue.length > 0 ? (
+                  <ul>{myAvailabilityDue.slice(0, 3).map(property => (
+                    <li key={property.id}>
+                      <span>{property.title}</span>
+                      <button type="button" className="landlord-priority-link" onClick={()=>void confirmAvailability(property.id)} disabled={availabilityConfirmingId === property.id} aria-busy={availabilityConfirmingId === property.id}>
+                        {availabilityConfirmingId === property.id ? "Confirming…" : "Confirm"}
+                      </button>
+                    </li>
+                  ))}</ul>
+                ) : <p className="landlord-priority-empty">All approved available listings are up to date.</p>}
+                {myAvailabilityDue.length > 3 && <p className="landlord-priority-more">And {myAvailabilityDue.length - 3} more in My Listings.</p>}
+              </article>
+
+              <article className="landlord-priority-card">
+                <div className="landlord-priority-card-head">
+                  <div><h4>Complete listing details</h4><strong>{myListingsNeedingDetails.length}</strong></div>
+                  <span aria-hidden="true">✎</span>
+                </div>
+                <p>Listings with short descriptions, no photos, or no estate/neighbourhood details.</p>
+                {myListingsNeedingDetails.length > 0 ? (
+                  <ul>{myListingsNeedingDetails.slice(0, 3).map(({ property, missingDetails }) => (
+                    <li key={property.id}>
+                      <span>{property.title}<small>{missingDetails.join(" · ")}</small></span>
+                      <button type="button" className="landlord-priority-link" onClick={()=>{beginEditProperty(property);document.getElementById("landlord-dashboard-workspace")?.scrollIntoView({behavior:"smooth",block:"start"});}}>Edit</button>
+                    </li>
+                  ))}</ul>
+                ) : <p className="landlord-priority-empty">Your listings have the key details tenants need.</p>}
+                {myListingsNeedingDetails.length > 3 && <p className="landlord-priority-more">And {myListingsNeedingDetails.length - 3} more in My Listings.</p>}
+              </article>
+
+              <article className="landlord-priority-card">
+                <div className="landlord-priority-card-head">
+                  <div><h4>Boosts ending soon</h4><strong>{myBoostsExpiring.length}</strong></div>
+                  <span aria-hidden="true">★</span>
+                </div>
+                <p>Review boosted listings with seven days or less remaining.</p>
+                {myBoostsExpiring.length > 0 ? (
+                  <ul>{myBoostsExpiring.slice(0, 3).map(property => (
+                    <li key={property.id}>
+                      <span>{property.title}<small>Ends {new Date(property.featuredUntil).toLocaleDateString("en-KE")}</small></span>
+                      <button type="button" className="landlord-priority-link" onClick={()=>void openPropertyPayment({type:"boost",propId:property.id})}>Renew</button>
+                    </li>
+                  ))}</ul>
+                ) : <p className="landlord-priority-empty">No boosts are ending in the next seven days.</p>}
+                {myBoostsExpiring.length > 3 && <p className="landlord-priority-more">And {myBoostsExpiring.length - 3} more in My Listings.</p>}
+              </article>
+            </div>
+          </section>
+
+          <div id="landlord-booking-requests" className="fcard landlord-booking-requests" style={{marginBottom:"1.5rem"}}>
             <h3>Booking Requests</h3>
             <p className="sub">Manage tenant requests for properties you own.</p>
             {bookingConflictId && (
@@ -1721,7 +1879,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               </div>
             )}
           </div>
-          <div className="dlayout">
+          <div id="landlord-dashboard-workspace" className="dlayout">
             <div className="dside">
               <div className="dshead">
                 <div className="dav">{user.data.name[0]}</div>
@@ -1818,8 +1976,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               </form>}
 
               {ldTab==="media" && <div className="fcard">
-                <h3>Upload Photos & Videos</h3><p className="sub">Attached automatically to your next listing.</p>
-                <input ref={fileRef} type="file" accept="image/*,video/*" multiple style={{display:"none"}} onChange={e=>handleFiles(e.target.files)}/>
+                <h3>Upload Photos & Videos</h3><p className="sub">Photos and videos are optimized automatically when you save the listing. Upload up to 20 files, maximum 50 MB each.</p>
+                <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/avif,video/mp4,video/webm,video/quicktime" multiple style={{display:"none"}} onChange={e=>{handleFiles(e.target.files);e.target.value="";}}/>
                 <div className={`upzone${dragOv?" ov":""}`}
                   role="button"
                   tabIndex={0}
@@ -1835,17 +1993,17 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                   onDragLeave={()=>setDragOv(false)}
                   onDrop={e=>{e.preventDefault();setDragOv(false);handleFiles(e.dataTransfer.files);}}>
                   <div className="upicon">📷</div><h4>Drag & Drop or Click to Upload</h4><p>Photos and short video tours</p>
-                  <div className="uptypes">{["JPG","PNG","MP4","MOV","Max 50MB"].map(t=><span key={t} className="utb">{t}</span>)}</div>
+                  <div className="uptypes">{["JPG","PNG","WEBP","AVIF","MP4","WEBM","MOV","Max 50MB"].map(t=><span key={t} className="utb">{t}</span>)}</div>
                 </div>
                 {pendMedia.length>0 && <>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"1rem"}}>
-                    <p style={{fontWeight:600,fontSize:"0.84rem"}}>{pendMedia.length} file{pendMedia.length>1?"s":""} ready</p>
-                    <button type="button" style={{background:"none",border:"none",color:"#dc2626",cursor:"pointer",fontSize:"0.74rem",fontWeight:700,fontFamily:"Inter,sans-serif"}} onClick={()=>setPendMedia([])}>Clear all</button>
+                    <p style={{fontWeight:600,fontSize:"0.84rem"}}>{pendMedia.length} file{pendMedia.length>1?"s":""} {pendMedia.some(item=>item.file)?"ready to upload":"uploaded"}</p>
+                    <button type="button" style={{background:"none",border:"none",color:"#dc2626",cursor:"pointer",fontSize:"0.74rem",fontWeight:700,fontFamily:"Inter,sans-serif"}} onClick={()=>{releaseMediaPreviews(pendMedia);setPendMedia([]);}}>Clear all</button>
                   </div>
                   <div className="mgrid">{pendMedia.map((m,i)=>(
                     <div key={i} className="mitem">
                       {m.type==="image"?<img src={m.url} alt=""/>:<video src={m.url} muted loop/>}
-                      <button type="button" className="mrm" aria-label={`Remove uploaded media ${i + 1}`} onClick={()=>setPendMedia(l=>l.filter((_,j)=>j!==i))}>✕</button>
+                      <button type="button" className="mrm" aria-label={`Remove uploaded media ${i + 1}`} onClick={()=>{releaseMediaPreviews([m]);setPendMedia(l=>l.filter((_,j)=>j!==i));}}>✕</button>
                       <span className="mtlbl">{m.type==="video"?"🎬":"📸"}</span>
                     </div>
                   ))}</div>
@@ -1892,8 +2050,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                   </div>
                 ))}{pendMedia.length>5&&<div style={{width:50,height:38,borderRadius:6,background:"rgba(10,10,24,0.07)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"0.68rem",color:"#bbb"}}>+{pendMedia.length-5}</div>}</div>}
                 <div style={{display:"flex",gap:8}}>
-                  <button type="submit" className="bp" style={{flex:1,padding:"12px"}} disabled={propLoading} aria-busy={propLoading}>{propLoading ? "Saving…" : editingProperty ? "Save Listing →" : "Post Listing Free →"}</button>
-                  {editingProperty && <button type="button" className="bghost" onClick={()=>{setEditingProperty(null);setForm(emptyPropertyForm());setPendMedia([]);}} disabled={propLoading}>Cancel</button>}
+                  <button type="submit" className="bp" style={{flex:1,padding:"12px"}} disabled={propLoading} aria-busy={propLoading}>{propLoading ? pendMedia.some(item=>item.file) ? "Uploading media & saving…" : "Saving…" : editingProperty ? "Save Listing →" : "Post Listing Free →"}</button>
+                  {editingProperty && <button type="button" className="bghost" onClick={()=>{releaseMediaPreviews(pendMedia);setEditingProperty(null);setForm(emptyPropertyForm());setPendMedia([]);}} disabled={propLoading}>Cancel</button>}
                 </div>
               </form>}
 
@@ -1972,6 +2130,8 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     ["flagged","🚩","Flagged",adminPropertyStatusReady ? flagged.length : null],
                     ["pending","⏳","Pending",adminPropertyStatusReady ? pending.length : null],
                     ["verify","✅","Verify Taken",adminPropertyStatusReady ? taken.length : null],
+                    ["availability-reports","📣","Availability Reports"],
+                    ["quality-review","🧭","Listing Quality Review"],
                     ["test-bookings","🧹","Test Bookings"],
                     ["users","👥","Users",adminUsersLoading ? null : adminUserCounts.total],
                     ["announce","📢","Announcements",activeAnns.length],
@@ -2259,6 +2419,17 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
                 {/* ACTIVITY LOG */}
                 {adTab==="activity" && <AdminActivityLog />}
+                {adTab==="availability-reports" && <AdminAvailabilityReports />}
+                {adTab==="quality-review" && (
+                  <AdminListingQualityReview
+                    onView={openProperty}
+                    onTakeOffline={async id => {
+                      await updatePropertyStatusApi(id, "HIDDEN");
+                      void refreshProperties();
+                      msg("Listing taken offline for admin review.", "warn");
+                    }}
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -2282,6 +2453,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             {n:"05",t:"Booking & Availability",d:"A booking request records interest but does not reserve a home. The landlord confirms only after arrangements are agreed; this marks the listing taken. Landlords may also update availability for agreements made outside HouseHunt."},
             {n:"06",t:"Platform Payments Only",d:"HouseHunt only processes payments for contact unlocks and optional listing boosts. Tenants and landlords coordinate all other arrangements directly."},
             {n:"07",t:"Mark Available Again",d:"When the home is vacant, both parties can confirm the booking is complete and the landlord can mark the listing available. Admins can resolve disputed availability after review."},
+            {n:"08",t:"Save & Share Homes",d:"Use the heart on a listing to keep it in Saved Homes on this browser, or share its listing link with friends and family."},
           ].map(s=>(
             <div key={s.n} className="gcard">
               <div className="gnum">{s.n}</div><h4>{s.t}</h4><p>{s.d}</p>
@@ -2323,6 +2495,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               closeModal={closeModal}
               canBook={Boolean(user && user.role === "tenant" && liveProp?.status === "available" && liveProp?.approved !== false)}
               onBookRequest={() => openBookingForm(liveProp)}
+              onShare={shareProperty}
             />
             {canManage && (
               <PropertyActions

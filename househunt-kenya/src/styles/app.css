@@ -789,3 +789,183 @@ button:disabled:hover, .bp:disabled:hover, .bboost:disabled:hover, .mpesabtn:dis
   .at{font-size:0.72rem;}
   .table-like-row,.actrow{grid-template-columns:1fr;}
 }
+
+.availability-report-form{
+  margin-top:1rem;
+  padding:1rem;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:12px;
+  background:rgba(255,255,255,0.035);
+}
+.availability-report-form summary{
+  cursor:pointer;
+  color:var(--rust);
+  font-weight:700;
+}
+.availability-report-form form,.availability-report-review{
+  display:grid;
+  gap:0.65rem;
+  margin-top:0.85rem;
+}
+.availability-report-form label,.availability-report-review label{
+  color:var(--muted,#aaa);
+  font-size:0.82rem;
+  font-weight:600;
+}
+.availability-report-form select,.availability-report-form textarea{
+  width:100%;
+  padding:0.7rem 0.8rem;
+  border:1px solid rgba(13,13,24,0.2);
+  border-radius:8px;
+  background:#fff;
+  color:var(--ink);
+  font:inherit;
+}
+.availability-report-form select option{background:#fff;color:var(--ink);}
+.availability-report-form textarea::placeholder{color:#675343;opacity:1;}
+.availability-report-review textarea,.availability-reports-filter select{
+  width:100%;
+  padding:0.7rem 0.8rem;
+  border:1px solid rgba(255,255,255,0.16);
+  border-radius:8px;
+  background:#191816;
+  color:var(--sand);
+  font:inherit;
+}
+.availability-report-review textarea::placeholder{color:rgba(245,230,200,0.68);opacity:1;}
+.availability-report-form textarea,.availability-report-review textarea{resize:vertical;}
+.availability-report-disclaimer,.availability-report-signin{
+  color:var(--muted,#aaa);
+  font-size:0.78rem;
+  line-height:1.5;
+}
+.availability-report-signin button{
+  border:0;
+  background:none;
+  color:var(--rust);
+  cursor:pointer;
+  font:inherit;
+  font-weight:700;
+  text-decoration:underline;
+}
+.availability-report-error,.availability-report-success{
+  margin:0;
+  font-size:0.86rem;
+}
+.availability-report-error{color:#ff9a91;}
+.availability-report-success{color:#8bd3a8;}
+.availability-reports-heading,.availability-report-card-head,.availability-report-pagination{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:1rem;
+}
+.availability-reports-heading h3{margin-bottom:0.35rem;}
+.availability-reports-filter{
+  display:flex;
+  align-items:center;
+  gap:0.8rem;
+  max-width:360px;
+  margin:1.25rem 0;
+}
+.availability-reports-filter label{white-space:nowrap;color:var(--muted,#aaa);}
+.availability-report-list{display:grid;gap:1rem;}
+.availability-report-card{
+  padding:1.1rem;
+  border:1px solid rgba(255,255,255,0.11);
+  border-radius:12px;
+  background:rgba(255,255,255,0.025);
+  color:var(--sand);
+}
+.availability-report-card h4{margin:0 0 0.3rem;color:#fff;}
+.availability-report-card-head p,.availability-report-details{margin:0;color:rgba(245,230,200,0.86);font-size:0.86rem;}
+.availability-report-status{
+  flex:none;
+  padding:0.28rem 0.55rem;
+  border-radius:999px;
+  background:rgba(196,153,26,0.15);
+  color:#e6bf55;
+  font-size:0.7rem;
+  font-weight:700;
+}
+.availability-report-status.status-resolved{background:rgba(72,164,104,0.16);color:#8bd3a8;}
+.availability-report-status.status-dismissed{background:rgba(255,255,255,0.1);color:#bbb;}
+.availability-report-meta{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:0.75rem;
+  margin:1rem 0;
+}
+.availability-report-meta div{min-width:0;}
+.availability-report-meta dt{color:rgba(245,230,200,0.72);font-size:0.72rem;}
+.availability-report-meta dd{margin:0.2rem 0 0;color:var(--sand);overflow-wrap:anywhere;font-size:0.86rem;}
+.availability-report-details{margin:0.65rem 0;white-space:pre-wrap;overflow-wrap:anywhere;}
+.availability-report-review{padding-top:0.8rem;border-top:1px solid rgba(255,255,255,0.1);}
+.availability-report-actions{display:flex;flex-wrap:wrap;gap:0.6rem;}
+.availability-report-empty{padding:1.5rem;color:rgba(245,230,200,0.86);text-align:center;}
+.availability-report-pagination{justify-content:center;margin-top:1.2rem;}
+.availability-report-pagination span{color:var(--muted,#aaa);font-size:0.84rem;}
+.nav-count{
+  display:inline-flex;
+  min-width:1.15rem;
+  height:1.15rem;
+  align-items:center;
+  justify-content:center;
+  margin-left:0.35rem;
+  padding:0 0.25rem;
+  border-radius:999px;
+  background:var(--rust);
+  color:#fff;
+  font-size:0.65rem;
+  font-weight:700;
+}
+.saved-homes-note,.saved-homes-message{
+  color:var(--muted,#aaa);
+  font-size:0.9rem;
+}
+.saved-homes-note{margin-top:0.5rem;}
+.saved-homes-clear{margin-top:0.8rem;padding:0.55rem 0.8rem;border:1px solid rgba(181,69,27,0.28);border-radius:8px;background:#fff;color:var(--rust);font-size:0.8rem;font-weight:700;cursor:pointer;}
+.saved-homes-clear:hover{background:#fff7f1;}
+.saved-homes-clear:disabled{cursor:wait;opacity:0.65;}
+.saved-homes-message{margin:1rem 0;padding:0.9rem 1rem;border-radius:8px;background:rgba(255,255,255,0.04);}
+.listing-quality-heading{display:flex;align-items:center;justify-content:space-between;gap:1rem;}
+.listing-quality-heading h3{margin-bottom:0.35rem;}
+.listing-quality-rules{margin:1rem 0;padding:0.9rem 1rem;border-left:3px solid var(--amber);background:rgba(196,153,26,0.08);color:rgba(245,230,200,0.9);font-size:0.82rem;line-height:1.55;}
+.listing-quality-reasons{margin:0.8rem 0 1rem;padding-left:1.2rem;color:#f1cc79;font-size:0.84rem;line-height:1.55;}
+.listing-quality-reasons li+li{margin-top:0.35rem;}
+
+.lhero-actions{display:flex;flex-wrap:wrap;gap:0.65rem;}
+.lhero-actions .bghost{border-color:rgba(245,230,200,0.25);color:var(--sand);}
+.landlord-priority{margin:1.5rem 0;}
+.landlord-priority-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;margin-bottom:0.85rem;}
+.landlord-priority-heading h3{font-family:'Cormorant Garamond',serif;font-size:1.45rem;color:var(--ink);}
+.landlord-priority-heading p,.landlord-priority-heading>span{color:var(--text-muted);font-size:0.8rem;}
+.landlord-priority-heading>span{text-align:right;}
+.landlord-priority-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0.9rem;}
+.landlord-priority-card{min-width:0;padding:1rem;background:#fff;border:1px solid var(--border);border-radius:13px;box-shadow:var(--shadow-soft);}
+.landlord-priority-card-head{display:flex;align-items:center;justify-content:space-between;gap:0.5rem;}
+.landlord-priority-card-head h4{font-size:0.88rem;color:var(--ink);}
+.landlord-priority-card-head strong{display:inline-block;margin-top:0.15rem;color:var(--rust);font-size:1.35rem;}
+.landlord-priority-card-head>span{color:var(--rust);font-size:1.3rem;}
+.landlord-priority-card>p{margin:0.55rem 0;color:var(--text-muted);font-size:0.77rem;line-height:1.5;}
+.landlord-priority-card ul{list-style:none;margin:0.55rem 0 0;}
+.landlord-priority-card li{display:flex;align-items:center;justify-content:space-between;gap:0.5rem;padding:0.55rem 0;border-top:1px solid var(--border);}
+.landlord-priority-card li>span{min-width:0;overflow-wrap:anywhere;color:var(--ink);font-size:0.78rem;font-weight:600;}
+.landlord-priority-card li small{display:block;margin-top:0.12rem;color:var(--text-muted);font-size:0.68rem;font-weight:400;}
+.landlord-priority-link{flex:none;padding:0.35rem 0.55rem;border:1px solid var(--border-strong);border-radius:7px;color:var(--rust);font-size:0.72rem;font-weight:700;cursor:pointer;}
+.landlord-priority-link:hover{background:rgba(181,69,27,0.07);}
+.landlord-priority-link:disabled{cursor:wait;opacity:0.65;}
+.landlord-priority-card .landlord-priority-empty,.landlord-priority-more{font-size:0.72rem;}
+.landlord-priority-card .landlord-priority-empty{color:#386246;}
+.landlord-priority-card .landlord-priority-more{margin-bottom:0;}
+
+@media (max-width:600px){
+  .availability-reports-heading,.availability-report-card-head{align-items:flex-start;}
+  .availability-reports-heading{flex-direction:column;}
+  .availability-reports-filter{align-items:flex-start;flex-direction:column;}
+  .availability-report-pagination{flex-wrap:wrap;}
+  .listing-quality-heading{align-items:flex-start;flex-direction:column;}
+  .landlord-priority-heading{align-items:flex-start;flex-direction:column;}
+  .landlord-priority-heading>span{text-align:left;}
+  .landlord-priority-grid{grid-template-columns:1fr;}
+}

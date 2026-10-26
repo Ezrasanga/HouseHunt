@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Icon from "../common/Icon";
 
-export default function Navbar({ tab, setTab, user, logout, setAuthModal, onChangePassword }) {
+export default function Navbar({ tab, setTab, user, logout, setAuthModal, onChangePassword, favoritesCount = 0 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const navRef = useRef(null);
   const navigate = useNavigate();
@@ -36,7 +36,7 @@ export default function Navbar({ tab, setTab, user, logout, setAuthModal, onChan
       <button className="logo" type="button" aria-label="HouseHunt Kenya home" onClick={() => navigateTo("home")}>House<em>Hunt</em> Kenya</button>
       <button className="mobile-nav-toggle" type="button" aria-label={mobileOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileOpen} onClick={() => setMobileOpen(open => !open)}>☰</button>
       <nav ref={navRef} className={`hnav${mobileOpen ? " open" : ""}`} aria-label="Primary navigation">
-        {[["home", "Home"], ["tenant", "Find a Home"], ["landlord", "For Landlords"], ["guide", "How It Works"]].map(([t, l]) => (
+        {[["home", "Home"], ["tenant", "Find a Home"], ["saved", "Saved Homes"], ["landlord", "For Landlords"], ["guide", "How It Works"]].map(([t, l]) => (
           <button
             key={t}
             type="button"
@@ -45,7 +45,7 @@ export default function Navbar({ tab, setTab, user, logout, setAuthModal, onChan
             onClick={() => navigateTo(t)}
           >
             {t === "home" && <Icon name="home" />}
-            {l}
+            {l}{t === "saved" && favoritesCount > 0 && <span className="nav-count">{favoritesCount}</span>}
           </button>
         ))}
         {user?.role === "admin" && (

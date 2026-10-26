@@ -2,7 +2,10 @@ import User from '../models/User.js';
 import { validatePasswordChangeInput, validateProfileUpdateInput } from '../utils/authValidator.js';
 
 function sanitizeUser(user) {
-  return user?.toJSON ? user.toJSON() : user;
+  const serialized = user?.toJSON ? user.toJSON() : user;
+  const sanitized = serialized && typeof serialized === 'object' ? { ...serialized } : serialized;
+  if (sanitized) delete sanitized.savedProperties;
+  return sanitized;
 }
 
 function buildPagination(page, limit, total) {
@@ -111,6 +114,78 @@ export async function getProfile(userId) {
   }
 
   return sanitizeUser(user);
+}
+
+function isObjectId(value) {
+  return typeof value === 'string' && /^[a-f\d]{24}$/i.test(value);
+}
+
+function requireSavedHomeUserId(userId) {
+  if (!isObjectId(userId)) {
+    const error = new Error('A valid user ID is required');
+    error.status = 400;
+    throw error;
+  }
+}
+
+function normalizeSavedHomeIds(user) {
+  return (user?.savedProperties || []).map(propertyId => String(propertyId));
+}
+
+export async function getSavedHomeIds(userId) {
+  requireSavedHomeUserId(userId);
+  const user = await User.findById(userId);
+  if (!user) {
+    const error = new Error('User not found');
+    error.status = 404;
+    throw error;
+  }
+
+  return normalizeSavedHomeIds(user);
+}
+
+export async function addSavedHome(userId, propertyId) {
+  requireSavedHomeUserId(userId);
+  if (!isObjectId(propertyId)) {
+    const error = new Error('A valid property ID is required');
+    error.status = 400;
+    throw error;
+  }
+
+  const user = await User.findByIdAndUpdate(
+    userId,
+    { $addToSet: { savedProperties: propertyId } },
+    { new: true, projection: { savedProperties: 1 } }
+  );
+  if (!user) {
+    const error = new Error('User not found');
+    error.status = 404;
+    throw error;
+  }
+
+  return normalizeSavedHomeIds(user);
+}
+
+export async function removeSavedHome(userId, propertyId) {
+  requireSavedHomeUserId(userId);
+  if (!isObjectId(propertyId)) {
+    const error = new Error('A valid property ID is required');
+    error.status = 400;
+    throw error;
+  }
+
+  const user = await User.findByIdAndUpdate(
+    userId,
+    { $pull: { savedProperties: propertyId } },
+    { new: true, projection: { savedProperties: 1 } }
+  );
+  if (!user) {
+    const error = new Error('User not found');
+    error.status = 404;
+    throw error;
+  }
+
+  return normalizeSavedHomeIds(user);
 }
 
 export async function updateProfile(userId, payload) {

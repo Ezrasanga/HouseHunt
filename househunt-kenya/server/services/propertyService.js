@@ -290,7 +290,7 @@ export async function createProperty(actor, payload = {}) {
     throw error;
   }
 
-  const validation = validatePropertyInput(payload);
+  const validation = validatePropertyInput(payload, actor.id);
   if (!validation.success) {
     const error = new Error('Validation failed');
     error.status = 400;
@@ -363,7 +363,7 @@ export async function updateProperty(id, actor, payload = {}) {
     );
   }
 
-  const validation = validatePropertyInput(payload);
+  const validation = validatePropertyInput(payload, actor.id);
   if (!validation.success) {
     const error = new Error('Validation failed');
     error.status = 400;
@@ -377,6 +377,8 @@ export async function updateProperty(id, actor, payload = {}) {
   }
 
   const updates = { ...validation.data };
+  updates.qualityReviewDismissedAt = null;
+  updates.qualityReviewDismissedBy = null;
   if (!isAdmin && property.isApproved) {
     updates.isApproved = false;
     updates.approvedBy = null;
@@ -671,10 +673,27 @@ export async function featureProperty(id, actor, payload = {}) {
   return { property: sanitizeProperty(populated) };
 }
 
-function validatePropertyInput(payload = {}) {
+function validUploadedMedia(item, actorId) {
+  if (!item || typeof item.url !== 'string' || !['image', 'video'].includes(item.type)) return false;
+  let url;
+  try {
+    url = new URL(item.url);
+  } catch {
+    return false;
+  }
+  const cloudName = globalThis.process?.env?.CLOUDINARY_CLOUD_NAME;
+  return url.protocol === 'https:'
+    && url.hostname === 'res.cloudinary.com'
+    && cloudName
+    && url.pathname.startsWith(`/${cloudName}/`)
+    && typeof item.publicId === 'string'
+    && item.publicId.startsWith(`househunt/properties/${actorId}/`);
+}
+
+function validatePropertyInput(payload = {}, actorId = '') {
   const errors = [];
   const data = payload || {};
-  const allowedFields = ['title', 'description', 'price', 'propertyType', 'location', 'bedrooms', 'bathrooms', 'amenities', 'images', 'coverImage'];
+  const allowedFields = ['title', 'description', 'price', 'propertyType', 'location', 'bedrooms', 'bathrooms', 'amenities', 'images', 'media', 'coverImage'];
   const updates = {};
 
   if (!Object.keys(data).length) {
@@ -743,6 +762,22 @@ function validatePropertyInput(payload = {}) {
     if (field === 'images') {
       if (!Array.isArray(data[field]) || data[field].length > 20) errors.push({ field, message: 'Images must be an array with at most 20 entries' });
       else updates.images = data[field];
+      continue;
+    }
+
+    if (field === 'media') {
+      const validMedia = Array.isArray(data[field])
+        && data[field].length <= 20
+        && data[field].every(item => validUploadedMedia(item, actorId));
+      if (!validMedia) {
+        errors.push({ field, message: 'Media must contain at most 20 valid uploaded image or video files' });
+      } else {
+        updates.media = data[field].map(item => ({
+          url: item.url.trim(),
+          type: item.type,
+          publicId: item.publicId.trim(),
+        }));
+      }
       continue;
     }
 

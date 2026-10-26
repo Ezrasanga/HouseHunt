@@ -28,6 +28,7 @@ export default function Footer({ user, setTab, setAuthModal }) {
           <h2>Explore</h2>
           <button type="button" onClick={() => setTab("home")}>Home</button>
           <button type="button" onClick={browseHomes}>Browse homes</button>
+          <button type="button" onClick={() => setTab("saved")}>Saved homes</button>
           <button type="button" onClick={() => setTab("guide")}>How it works</button>
         </nav>
 

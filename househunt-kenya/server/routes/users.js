@@ -8,6 +8,9 @@ const router = express.Router();
 router.get('/profile', authenticate, userController.getProfile);
 router.patch('/profile', authenticate, userController.updateProfile);
 router.patch('/change-password', authenticate, userController.changePassword);
+router.get('/saved-homes', authenticate, authorize('TENANT'), userController.getSavedHomes);
+router.post('/saved-homes/:propertyId', authenticate, authorize('TENANT'), userController.addSavedHome);
+router.delete('/saved-homes/:propertyId', authenticate, authorize('TENANT'), userController.removeSavedHome);
 
 router.get('/', authenticate, authorize('ADMIN'), userController.list);
 router.get('/:id', authenticate, authorize('ADMIN'), userController.get);

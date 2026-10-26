@@ -23,7 +23,12 @@ function amenityTags(amenities = {}) {
 
 export function normalizeProperty(property, index = 0) {
 	const owner = property?.owner && typeof property.owner === "object" ? property.owner : null;
-	const media = (property?.images || []).map(url => ({ url, type: "image" }));
+	const uploadedMedia = Array.isArray(property?.media) ? property.media : [];
+	const uploadedUrls = new Set(uploadedMedia.map(item => item.url));
+	const media = [
+		...uploadedMedia,
+		...(property?.images || []).filter(url => !uploadedUrls.has(url)).map(url => ({ url, type: "image" })),
+	];
 	const tags = amenityTags(property?.amenities);
 
 	return {
@@ -35,6 +40,7 @@ export function normalizeProperty(property, index = 0) {
 		rooms: `${property?.bedrooms ?? 0} Bed · ${property?.bathrooms ?? 0} Bath`,
 		type: property?.propertyType === "Single Room" ? "Room" : property?.propertyType || "Property",
 		rules: property?.description || "No description available.",
+		locationDetails: property?.location || {},
 		tags,
 		color: COLORS[index % COLORS.length],
 		initials: (property?.title || "P").slice(0, 2).toUpperCase(),
@@ -97,6 +103,28 @@ export async function updatePropertyStatus(id, status) {
 export async function confirmPropertyAvailability(id) {
 	const response = await api.post(`/api/properties/${id}/confirm-availability`);
 	return propertyFromResponse(response);
+}
+
+export async function getListingQualityReviews(params = {}) {
+	const response = await api.get("/api/properties/quality-review", { params });
+	const data = response.data.data || {};
+	return {
+		listings: (data.listings || []).map((listing, index) => ({
+			...normalizeProperty({
+				...listing,
+				owner: listing.landlord || listing.landlordId,
+				status: listing.status,
+				isApproved: listing.isApproved,
+			}, index),
+			qualityReasons: listing.reasons || [],
+		})),
+		pagination: data.pagination || null,
+	};
+}
+
+export async function dismissListingQualityReview(id) {
+	const response = await api.patch(`/api/properties/${id}/quality-review/dismiss`);
+	return response.data.data;
 }
 
 export async function featureProperty(id, featured) {

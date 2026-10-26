@@ -12,6 +12,7 @@ function resolveRoute(pathname) {
     "/reset-password": { tab: "home", authMode: "reset" },
     "/guide": { tab: "guide" },
     "/tenant": { tab: "tenant", allowedRole: "tenant" },
+    "/saved": { tab: "saved" },
     "/landlord": { tab: "landlord", allowedRole: "landlord" },
     "/admin": { tab: "admin", allowedRole: "admin" },
   };

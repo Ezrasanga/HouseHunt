@@ -92,6 +92,20 @@ const propertySchema = new mongoose.Schema(
         message: 'A maximum of 20 images is allowed',
       },
     },
+    media: {
+      type: [{
+        url: { type: String, required: true, trim: true },
+        type: { type: String, enum: ['image', 'video'], required: true },
+        publicId: { type: String, required: true, trim: true },
+      }],
+      default: [],
+      validate: {
+        validator: function (value) {
+          return value.length <= 20;
+        },
+        message: 'A maximum of 20 media files is allowed',
+      },
+    },
     coverImage: {
       type: String,
       trim: true,
@@ -105,6 +119,15 @@ const propertySchema = new mongoose.Schema(
     },
     availabilityConfirmedAt: {
       type: Date,
+      default: null,
+    },
+    qualityReviewDismissedAt: {
+      type: Date,
+      default: null,
+    },
+    qualityReviewDismissedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
       default: null,
     },
     owner: {

@@ -45,6 +45,33 @@ export async function getProfile(req, res) {
   }
 }
 
+export async function getSavedHomes(req, res) {
+  try {
+    const propertyIds = await userService.getSavedHomeIds(req.user?.id);
+    return sendResponse(res, 200, true, 'Saved homes fetched successfully', { propertyIds }, []);
+  } catch (err) {
+    return handleError(res, err);
+  }
+}
+
+export async function addSavedHome(req, res) {
+  try {
+    const propertyIds = await userService.addSavedHome(req.user?.id, req.params.propertyId);
+    return sendResponse(res, 200, true, 'Home saved successfully', { propertyIds }, []);
+  } catch (err) {
+    return handleError(res, err);
+  }
+}
+
+export async function removeSavedHome(req, res) {
+  try {
+    const propertyIds = await userService.removeSavedHome(req.user?.id, req.params.propertyId);
+    return sendResponse(res, 200, true, 'Home removed from saved homes', { propertyIds }, []);
+  } catch (err) {
+    return handleError(res, err);
+  }
+}
+
 export async function updateProfile(req, res) {
   try {
     const result = await userService.updateProfile(req.user?.id, req.body);

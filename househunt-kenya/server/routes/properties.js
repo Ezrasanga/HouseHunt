@@ -1,5 +1,6 @@
 import express from 'express';
 import * as propertyController from '../controllers/propertyController.js';
+import * as listingQualityController from '../controllers/listingQualityController.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { requireAuth } from '../middleware/authMiddleware.js';
 import { authorize } from '../middleware/authorize.js';
@@ -18,6 +19,8 @@ const optionalAuth = async (req, res, next) => {
 };
 
 router.get('/', optionalAuth, propertyController.list);
+router.get('/quality-review', requireAuth, authorize('ADMIN'), listingQualityController.list);
+router.patch('/:id/quality-review/dismiss', requireAuth, authorize('ADMIN'), listingQualityController.dismiss);
 router.post('/', requireAuth, propertyController.create);
 router.get('/:id', optionalAuth, propertyController.get);
 router.patch('/:id', requireAuth, propertyController.update);

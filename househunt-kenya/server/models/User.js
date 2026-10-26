@@ -43,6 +43,13 @@ const userSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    savedProperties: {
+      type: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Property',
+      }],
+      default: [],
+    },
     nationalId: {
       type: String,
       trim: true,
@@ -90,6 +97,7 @@ const userSchema = new mongoose.Schema(
       transform(doc, ret) {
         delete ret.password;
         delete ret.refreshToken;
+        delete ret.savedProperties;
         delete ret.__v;
         ret.id = ret._id;
         delete ret._id;
@@ -101,6 +109,7 @@ const userSchema = new mongoose.Schema(
       transform(doc, ret) {
         delete ret.password;
         delete ret.refreshToken;
+        delete ret.savedProperties;
         delete ret.__v;
         ret.id = ret._id;
         delete ret._id;

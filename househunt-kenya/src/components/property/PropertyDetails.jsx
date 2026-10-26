@@ -1,6 +1,8 @@
 import Badge from "../common/Badge";
 import Icon from "../common/Icon";
 import { formatAvailabilityConfirmation } from "../../utils/availability";
+import { useState } from "react";
+import { reportPropertyAvailability } from "../../services/availabilityReportService";
 
 export default function PropertyDetails({
   liveProp,
@@ -13,11 +15,32 @@ export default function PropertyDetails({
   closeModal,
   canBook,
   onBookRequest,
+  onShare,
 }) {
+  const [reportReason, setReportReason] = useState("already-rented");
+  const [reportDetails, setReportDetails] = useState("");
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const [reportError, setReportError] = useState("");
+  const [reportSuccess, setReportSuccess] = useState("");
   const KES = n => `KSh ${Number(n).toLocaleString()}`;
   const statusKey = liveProp.status === "available" ? "av" : "tk";
   const isAvailable = liveProp.status === "available";
   const hasContact = liveProp.contact && (liveProp.contact.phone || liveProp.contact.whatsapp || liveProp.contact.email);
+  const submitAvailabilityReport = async event => {
+    event.preventDefault();
+    setReportSubmitting(true);
+    setReportError("");
+    setReportSuccess("");
+    try {
+      await reportPropertyAvailability(liveProp.id, { reason: reportReason, details: reportDetails });
+      setReportDetails("");
+      setReportSuccess("Thanks. Your report has been sent to our admin team for review.");
+    } catch (error) {
+      setReportError(error.response?.data?.message || error.message || "Could not submit your report.");
+    } finally {
+      setReportSubmitting(false);
+    }
+  };
 
   return (
     <div className="mbody">
@@ -76,6 +99,7 @@ export default function PropertyDetails({
         <aside className="pd-right">
           <div className="pd-action-panel">
             <button className="bp detail-back" type="button" onClick={closeModal}>← Back to listings</button>
+            <button className="bghost" type="button" onClick={() => onShare(liveProp)}><Icon name="share" /> Share listing</button>
             {!user && <button className="bghost" type="button" onClick={() => { closeModal(); setAuthModal("tenant"); }}>Login to unlock</button>}
           </div>
 
@@ -104,6 +128,41 @@ export default function PropertyDetails({
             <div className="pd-action-panel" style={{ marginTop: "1rem" }}>
               <button className="bp" type="button" onClick={onBookRequest}><Icon name="calendar" /> Request booking</button>
             </div>
+          )}
+
+          {user?.role === "tenant" && isAvailable && liveProp.approved && (
+            <details className="availability-report-form">
+              <summary>Report that this listing may be unavailable</summary>
+              <form onSubmit={submitAvailabilityReport}>
+                <label htmlFor="availability-report-reason">What happened?</label>
+                <select id="availability-report-reason" value={reportReason} onChange={event => setReportReason(event.target.value)}>
+                  <option value="already-rented">It appears to be rented or occupied</option>
+                  <option value="landlord-unresponsive">The landlord says it is unavailable</option>
+                  <option value="incorrect-details">The listing details appear incorrect</option>
+                  <option value="other">Other availability concern</option>
+                </select>
+                <label htmlFor="availability-report-details">Additional details (optional)</label>
+                <textarea
+                  id="availability-report-details"
+                  maxLength={500}
+                  rows={3}
+                  value={reportDetails}
+                  onChange={event => setReportDetails(event.target.value)}
+                  placeholder="Share helpful context (up to 500 characters)"
+                />
+                {reportError && <p className="availability-report-error" role="alert">{reportError}</p>}
+                {reportSuccess && <p className="availability-report-success" role="status">{reportSuccess}</p>}
+                <button className="bghost" type="submit" disabled={reportSubmitting || Boolean(reportSuccess)}>
+                  {reportSubmitting ? "Sending…" : reportSuccess ? "Report submitted" : "Send report"}
+                </button>
+                <p className="availability-report-disclaimer">Your report helps our team review the listing. It will not mark the property as taken automatically.</p>
+              </form>
+            </details>
+          )}
+          {!user && isAvailable && liveProp.approved && (
+            <p className="availability-report-signin">
+              Think this listing is unavailable? <button type="button" onClick={() => setAuthModal("tenant")}>Sign in to report it</button>
+            </p>
           )}
 
           {((user?.role === "tenant" && isUnlocked(liveProp.id)) || user?.role !== "tenant") && hasContact && (
