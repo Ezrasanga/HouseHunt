@@ -1,17 +1,6 @@
 import { useEffect, useState } from "react";
 import { AuthContext } from "./auth-context";
-import { login as loginRequest, profile as profileRequest, register as registerRequest, updateProfile as updateProfileRequest } from "../services/authService";
-
-const TOKEN_KEY = "token";
-const USER_KEY = "househunt-user";
-
-function readStoredUser() {
-	try {
-		return JSON.parse(window.localStorage.getItem(USER_KEY) || "null");
-	} catch {
-		return null;
-	}
-}
+import { login as loginRequest, logout as logoutRequest, profile as profileRequest, register as registerRequest, updateProfile as updateProfileRequest } from "../services/authService";
 
 function normalizeUser(user) {
 	if (!user) return null;
@@ -37,28 +26,22 @@ function authenticationError(error, fallback) {
 }
 
 export function AuthProvider({ children }) {
-	const [user, setUser] = useState(() => readStoredUser());
-	const [isRestoring, setIsRestoring] = useState(() => Boolean(window.localStorage.getItem(TOKEN_KEY)));
+	const [user, setUser] = useState(null);
+	const [isRestoring, setIsRestoring] = useState(true);
 	const [isLoading, setIsLoading] = useState(false);
 
 	const clearSession = () => {
-		window.localStorage.removeItem(TOKEN_KEY);
-		window.localStorage.removeItem(USER_KEY);
 		setUser(null);
 	};
 
 	const updateUser = updater => {
 		setUser(current => {
-			const nextUser = typeof updater === "function" ? updater(current) : updater;
-			window.localStorage.setItem(USER_KEY, JSON.stringify(nextUser));
-			return nextUser;
+			return typeof updater === "function" ? updater(current) : updater;
 		});
 	};
 
-	const saveSession = session => {
-		const nextUser = normalizeUser(session.user);
-		window.localStorage.setItem(TOKEN_KEY, session.token);
-		window.localStorage.setItem(USER_KEY, JSON.stringify(nextUser));
+	const saveSession = userData => {
+		const nextUser = normalizeUser(userData);
 		setUser(nextUser);
 		return nextUser;
 	};
@@ -66,21 +49,20 @@ export function AuthProvider({ children }) {
 	useEffect(() => {
 		const handleSessionExpired = () => clearSession();
 		window.addEventListener("househunt:session-expired", handleSessionExpired);
-
-		if (!window.localStorage.getItem(TOKEN_KEY)) {
-			return () => window.removeEventListener("househunt:session-expired", handleSessionExpired);
-		}
+		window.localStorage.removeItem("token");
+		window.localStorage.removeItem("househunt-user");
 
 		let active = true;
 		profileRequest()
 			.then(response => {
 				if (active && response.data.success) {
-					const storedToken = window.localStorage.getItem(TOKEN_KEY);
-					saveSession({ token: storedToken, user: response.data.data.user });
+					saveSession(response.data.data.user);
 				}
 			})
-			.catch(() => {
-				if (active) clearSession();
+			.catch(error => {
+				if (active && error.response?.status !== 401) {
+					console.error("Unable to restore the HouseHunt session.", error);
+				}
 			})
 			.finally(() => {
 				if (active) setIsRestoring(false);
@@ -100,7 +82,7 @@ export function AuthProvider({ children }) {
 				role: payload.role ? String(payload.role).toUpperCase() : undefined,
 			});
 			if (!response.data.success) throw new Error(response.data.message || "Login failed.");
-			return saveSession(response.data.data);
+			return saveSession(response.data.data.user);
 		} catch (error) {
 			throw authenticationError(error, "Login failed.");
 		} finally {
@@ -116,7 +98,7 @@ export function AuthProvider({ children }) {
 				role: String(payload.role || "TENANT").toUpperCase(),
 			});
 			if (!response.data.success) throw new Error(response.data.message || "Registration failed.");
-			return saveSession(response.data.data);
+			return saveSession(response.data.data.user);
 		} catch (error) {
 			throw authenticationError(error, "Registration failed.");
 		} finally {
@@ -129,10 +111,22 @@ export function AuthProvider({ children }) {
 		try {
 			const response = await updateProfileRequest(payload);
 			if (!response.data.success) throw new Error(response.data.message || "Profile update failed.");
-			const storedToken = window.localStorage.getItem(TOKEN_KEY);
-			return saveSession({ token: storedToken, user: response.data.data.user });
+			return saveSession(response.data.data.user);
 		} catch (error) {
 			throw authenticationError(error, "Profile update failed.");
+		} finally {
+			setIsLoading(false);
+		}
+	};
+
+	const logout = async () => {
+		setIsLoading(true);
+		try {
+			const response = await logoutRequest();
+			if (!response.data.success) throw new Error(response.data.message || "Sign out failed.");
+			clearSession();
+		} catch (error) {
+			throw authenticationError(error, "Sign out failed.");
 		} finally {
 			setIsLoading(false);
 		}
@@ -146,7 +140,7 @@ export function AuthProvider({ children }) {
 		register,
 		updateProfile,
 		updateUser,
-		logout: clearSession,
+		logout,
 	};
 
 	return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

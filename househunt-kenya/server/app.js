@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
 import routes from './routes/index.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -8,6 +9,8 @@ const app = express();
 
 // Middleware
 app.use(cors({
+	credentials: true,
+	allowedHeaders: ['Content-Type', 'X-HouseHunt-Request'],
 	origin(origin, callback) {
 		const env = globalThis.process?.env || {};
 		const allowedOrigins = String(env.CORS_ORIGINS || 'http://localhost:5174,http://127.0.0.1:5174')
@@ -27,6 +30,7 @@ app.use(cors({
 		return callback(new Error('Origin not allowed by CORS'));
 	},
 }));
+app.use(cookieParser());
 app.use(express.json());
 app.use(morgan('dev'));
 

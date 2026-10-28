@@ -70,14 +70,31 @@ continue to display; new media references are stored with the listing.
 After a tenancy ends, either the tenant or landlord can request completion from
 the approved booking. The other party must confirm before the booking becomes
 `COMPLETED`; when no other active confirmed booking remains, the listing becomes
-available again. Either party may withdraw their own unconfirmed request.
+available again. Standard completion is available only after the agreed lease
+term ends; an earlier end must use the early termination process. Either party
+may withdraw their own unconfirmed request.
+For an early end, only the landlord can submit a reasoned request through
+`PATCH /api/bookings/:id/termination`. The tenant can agree, dispute, or wait;
+agreement ends the tenancy, while a dispute keeps it active for admin review.
+Each request and response is retained in the booking's termination history.
+An admin resolves a disputed request with `END_TENANCY` or `KEEP_ACTIVE` through
+`PATCH /api/bookings/:id/termination/admin-resolve`. The reason, response, and
+resolution are retained on the booking and actions are written to the audit log.
+Open requests and disputes are shown in both parties' booking views; there is no
+separate email or push-notification delivery.
 Booking approval marks a listing taken only after the landlord confirms the
 arrangement with the tenant. A pending tenant request does not reserve the
-property. Landlords can also update availability for arrangements made outside
-HouseHunt with `PATCH /api/properties/:id/status`; only the owner of an
-approved listing can make that change, and active confirmed bookings prevent
-marking it available. Admins can explicitly resolve disputed active bookings
-through `PATCH /api/bookings/:id/admin-resolve`, with an audit entry.
+property. For an arrangement made outside HouseHunt, the landlord must record
+the tenant name, move-in date, and lease duration when marking an available
+listing taken with `PATCH /api/properties/:id/status`. The details are retained
+in the property's external tenancy history and are not exposed in public listing
+responses. After the recorded lease term ends, the landlord must explicitly
+confirm the property is vacant before marking it available. Active HouseHunt
+bookings and external tenancies cannot be bypassed by a direct status change.
+Admins can take listings offline, but availability must be resolved through
+the active booking or external tenancy; corrections to legacy occupancy require
+an explicit admin vacancy confirmation. Admins can resolve disputed active
+bookings through `PATCH /api/bookings/:id/admin-resolve`, with an audit entry.
 
 Landlords can reconfirm an approved available listing with
 `POST /api/properties/:id/confirm-availability`. The confirmation timestamp is
@@ -115,6 +132,23 @@ can be assessed again.
 
 Endpoints are exposed under `/api/*`.
 
+## Authentication sessions
+
+Browser sign-in and registration use a seven-day JWT in the HttpOnly
+`househunt_session` cookie; the token is not returned in the JSON response or
+stored in browser storage. The browser sends credentials and the
+`X-HouseHunt-Request: 1` header with API requests. Cookie-authenticated
+state-changing requests are rejected without that header, and credentialed
+CORS accepts only the configured frontend origins.
+
+`POST /api/auth/logout` invalidates the current token version and clears the
+cookie. Token-version revocation signs the account out on all devices.
+Changing a password increments the token version and issues a replacement
+cookie for the current browser. Password reset continues to invalidate all
+existing sessions. HTTPS deployments must preserve the request's HTTPS
+protocol through the reverse proxy so the cookie is marked Secure; the cookie
+uses SameSite=None for secure requests and SameSite=Lax for local HTTP.
+
 ## Property discovery filters
 
 `GET /api/properties` supports `county`, `town`, `bedrooms`, and a comma-separated
@@ -127,13 +161,16 @@ them by the latest landlord availability confirmation. Existing `page` and
 
 ## Saved homes
 
-Signed-in tenants can view saved listing IDs with `GET /api/users/saved-homes`,
+Signed-in users can view saved listing IDs with `GET /api/users/saved-homes`,
 save a listing with `POST /api/users/saved-homes/:propertyId`, or remove it with
 `DELETE /api/users/saved-homes/:propertyId`. Saved listing references are
-stored on the tenant account and load across devices. Unauthenticated visitors'
-saved homes remain in that browser; those local saves are merged into the
-tenant account the next time the tenant signs in. These routes require tenant
-authentication.
+stored on the authenticated account and load across devices. Saved homes are
+not available while signed out and are never written to browser storage.
+
+Landlords can save their primary phone, WhatsApp number, and social usernames
+in the Contact & Social Media section of their profile. These details are
+returned with a property only when its contact information is unlocked by the
+tenant, or when viewed by the listing owner or an admin.
 
 ## Password recovery
 

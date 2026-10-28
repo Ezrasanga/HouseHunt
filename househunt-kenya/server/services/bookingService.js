@@ -134,7 +134,11 @@ async function releasePropertyIfNoApprovedBookings(propertyId) {
   if (activeApprovedBooking) return;
 
   await Property.updateOne(
-    { _id: propertyId, status: 'OCCUPIED' },
+    {
+      _id: propertyId,
+      status: 'OCCUPIED',
+      externalTenancies: { $not: { $elemMatch: { endedAt: null } } },
+    },
     { $set: { status: 'AVAILABLE' } }
   );
 }
@@ -143,6 +147,33 @@ function completionError(message) {
   const error = new Error(message);
   error.status = 409;
   return error;
+}
+
+function leaseTermEndsAt(booking) {
+  const moveInDate = new Date(booking.moveInDate);
+  const leaseMonths = Number(booking.leaseMonths);
+  if (Number.isNaN(moveInDate.getTime()) || !Number.isInteger(leaseMonths) || leaseMonths < 1) {
+    const error = new Error('This booking is missing a valid move-in date or lease duration.');
+    error.status = 409;
+    throw error;
+  }
+
+  const year = moveInDate.getUTCFullYear();
+  const month = moveInDate.getUTCMonth() + leaseMonths;
+  const day = moveInDate.getUTCDate();
+  const monthStart = new Date(Date.UTC(year, month, 1));
+  const lastDayOfMonth = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(
+    monthStart.getUTCFullYear(),
+    monthStart.getUTCMonth(),
+    Math.min(day, lastDayOfMonth) + 1
+  ));
+}
+
+function assertLeaseTermEnded(booking) {
+  if (Date.now() < leaseTermEndsAt(booking).getTime()) {
+    throw completionError('The agreed lease term has not ended. Use an early termination request to end it sooner.');
+  }
 }
 
 export async function createBooking(actor, payload = {}) {
@@ -393,6 +424,10 @@ export async function updateBookingCompletion(id, actor, action = 'REQUEST') {
     throw completionError('Only an approved booking can be marked for completion.');
   }
 
+  if (['PENDING', 'DISPUTED'].includes(booking.terminationRequestStatus)) {
+    throw completionError('Resolve the early termination request before updating tenancy completion.');
+  }
+
   const requesterRole = booking.completionRequestedBy || null;
   if (normalizedAction === 'WITHDRAW') {
     if (requesterRole !== actor.role) {
@@ -403,6 +438,7 @@ export async function updateBookingCompletion(id, actor, action = 'REQUEST') {
         _id: booking._id,
         status: 'APPROVED',
         completionRequestedBy: actor.role,
+        terminationRequestStatus: { $nin: ['PENDING', 'DISPUTED'] },
       },
       { $set: { completionRequestedBy: null, completionRequestedAt: null } },
       { new: true }
@@ -412,6 +448,8 @@ export async function updateBookingCompletion(id, actor, action = 'REQUEST') {
     }
     return { booking: serializeBooking(updatedBooking), completed: false };
   }
+
+  assertLeaseTermEnded(booking);
 
   if (normalizedAction === 'REQUEST') {
     if (requesterRole && requesterRole !== actor.role) {
@@ -425,6 +463,7 @@ export async function updateBookingCompletion(id, actor, action = 'REQUEST') {
         _id: booking._id,
         status: 'APPROVED',
         completionRequestedBy: { $in: [null, ''] },
+        terminationRequestStatus: { $nin: ['PENDING', 'DISPUTED'] },
       },
       {
         $set: {
@@ -453,6 +492,7 @@ export async function updateBookingCompletion(id, actor, action = 'REQUEST') {
       _id: booking._id,
       status: 'APPROVED',
       completionRequestedBy: requesterRole,
+      terminationRequestStatus: { $nin: ['PENDING', 'DISPUTED'] },
     },
     {
       $set: {
@@ -470,6 +510,219 @@ export async function updateBookingCompletion(id, actor, action = 'REQUEST') {
   return { booking: serializeBooking(completedBooking), completed: true };
 }
 
+export async function updateEarlyTermination(id, actor, action, reason = '') {
+  if (!actor?.id) {
+    const error = new Error('Authentication required');
+    error.status = 401;
+    throw error;
+  }
+
+  const normalizedAction = String(action || '').toUpperCase();
+  if (!['REQUEST', 'AGREE', 'DISPUTE', 'WITHDRAW'].includes(normalizedAction)) {
+    const error = new Error('Invalid early termination action');
+    error.status = 400;
+    throw error;
+  }
+  if (normalizedAction === 'REQUEST' && actor.role !== 'LANDLORD') {
+    const error = new Error('Only the landlord can request early termination');
+    error.status = 403;
+    throw error;
+  }
+  if (normalizedAction !== 'REQUEST' && !['TENANT', 'LANDLORD'].includes(actor.role)) {
+    const error = new Error('Only the tenant or landlord may respond to early termination');
+    error.status = 403;
+    throw error;
+  }
+
+  const cleanReason = String(reason || '').trim();
+  if (normalizedAction === 'REQUEST' && (cleanReason.length < 10 || cleanReason.length > 1000)) {
+    const error = new Error('Please provide a reason between 10 and 1000 characters');
+    error.status = 400;
+    error.errors = [{ field: 'reason', message: 'A reason between 10 and 1000 characters is required' }];
+    throw error;
+  }
+
+  const booking = await Booking.findById(id);
+  if (!booking) {
+    const error = new Error('Booking not found');
+    error.status = 404;
+    throw error;
+  }
+
+  const isTenant = actor.role === 'TENANT' &&
+    normalizeId(booking.tenant) === normalizeId(actor.id);
+  const isLandlord = actor.role === 'LANDLORD' &&
+    normalizeId(booking.landlord) === normalizeId(actor.id);
+  if (!isTenant && !isLandlord) {
+    const error = new Error('You do not have permission to update this tenancy');
+    error.status = 403;
+    throw error;
+  }
+  if (booking.status !== 'APPROVED') {
+    throw completionError('Early termination requests require an active confirmed tenancy.');
+  }
+  if (booking.completionRequestedBy) {
+    throw completionError('Withdraw or resolve the existing completion request before requesting early termination.');
+  }
+
+  const requestStatus = booking.terminationRequestStatus || 'NONE';
+  const now = new Date();
+  let filter = {
+    _id: booking._id,
+    status: 'APPROVED',
+    completionRequestedBy: { $in: [null, ''] },
+  };
+  let update;
+  let completed = false;
+
+  if (normalizedAction === 'REQUEST') {
+    if (requestStatus === 'PENDING' || requestStatus === 'DISPUTED') {
+      throw completionError('An early termination request is already awaiting a response or review.');
+    }
+    filter.terminationRequestStatus = requestStatus === 'NONE'
+      ? { $in: [null, '', 'NONE'] }
+      : requestStatus;
+    update = {
+      $set: {
+        terminationRequestStatus: 'PENDING',
+        terminationReason: cleanReason,
+        terminationRequestedAt: now,
+        terminationRespondedAt: null,
+        terminationResolvedAt: null,
+        terminationResolvedBy: null,
+        terminationResolution: null,
+        terminationResolutionNote: '',
+      },
+      $push: {
+        terminationHistory: {
+          reason: cleanReason,
+          requestedAt: now,
+          status: 'PENDING',
+        },
+      },
+    };
+  } else if (normalizedAction === 'WITHDRAW') {
+    if (!isLandlord || requestStatus !== 'PENDING') {
+      throw completionError('Only the landlord can withdraw a pending early termination request.');
+    }
+    filter.terminationRequestStatus = 'PENDING';
+    update = {
+      $set: {
+        terminationRequestStatus: 'WITHDRAWN',
+        terminationRespondedAt: now,
+        'terminationHistory.$.status': 'WITHDRAWN',
+        'terminationHistory.$.respondedAt': now,
+      },
+    };
+  } else {
+    if (!isTenant || requestStatus !== 'PENDING') {
+      throw completionError('Only the tenant can respond to a pending early termination request.');
+    }
+    filter.terminationRequestStatus = 'PENDING';
+    update = normalizedAction === 'DISPUTE'
+      ? {
+        $set: {
+          terminationRequestStatus: 'DISPUTED',
+          terminationRespondedAt: now,
+          'terminationHistory.$.status': 'DISPUTED',
+          'terminationHistory.$.respondedAt': now,
+        },
+      }
+      : {
+        $set: {
+          status: 'COMPLETED',
+          completedAt: now,
+          terminationRequestStatus: 'AGREED',
+          terminationRespondedAt: now,
+          terminationResolution: 'MUTUAL_AGREEMENT',
+          'terminationHistory.$.status': 'AGREED',
+          'terminationHistory.$.respondedAt': now,
+          'terminationHistory.$.resolvedAt': now,
+          'terminationHistory.$.resolution': 'MUTUAL_AGREEMENT',
+        },
+      };
+    completed = normalizedAction === 'AGREE';
+  }
+
+  if (normalizedAction !== 'REQUEST') {
+    filter.terminationHistory = { $elemMatch: { status: 'PENDING' } };
+  }
+
+  const updatedBooking = await Booking.findOneAndUpdate(filter, update, { new: true });
+  if (!updatedBooking) {
+    throw completionError('The early termination request changed. Refresh and try again.');
+  }
+  if (completed) await releasePropertyIfNoApprovedBookings(booking.property);
+  return { booking: serializeBooking(updatedBooking), completed };
+}
+
+export async function resolveEarlyTermination(id, actor, resolution, note = '') {
+  if (!actor?.id || actor.role !== 'ADMIN') {
+    const error = new Error('Only admins can resolve disputed early termination requests');
+    error.status = actor?.id ? 403 : 401;
+    throw error;
+  }
+
+  const normalizedResolution = String(resolution || '').toUpperCase();
+  if (!['END_TENANCY', 'KEEP_ACTIVE'].includes(normalizedResolution)) {
+    const error = new Error('Resolution must be END_TENANCY or KEEP_ACTIVE');
+    error.status = 400;
+    throw error;
+  }
+  const resolutionNote = String(note || '').trim();
+  if (resolutionNote.length > 1000) {
+    const error = new Error('Resolution note must be 1000 characters or fewer');
+    error.status = 400;
+    error.errors = [{ field: 'note', message: 'Resolution note must be 1000 characters or fewer' }];
+    throw error;
+  }
+
+  const booking = await Booking.findById(id);
+  if (!booking) {
+    const error = new Error('Booking not found');
+    error.status = 404;
+    throw error;
+  }
+  if (booking.status !== 'APPROVED' || booking.terminationRequestStatus !== 'DISPUTED') {
+    throw completionError('Only a disputed early termination request can be resolved.');
+  }
+
+  const completesTenancy = normalizedResolution === 'END_TENANCY';
+  const resolvedAt = new Date();
+  const update = {
+    $set: {
+      terminationRequestStatus: 'RESOLVED',
+      terminationResolution: normalizedResolution,
+      terminationResolutionNote: resolutionNote,
+      terminationResolvedAt: resolvedAt,
+      terminationResolvedBy: actor.id,
+      'terminationHistory.$.status': 'RESOLVED',
+      'terminationHistory.$.resolvedAt': resolvedAt,
+      'terminationHistory.$.resolvedBy': actor.id,
+      'terminationHistory.$.resolution': normalizedResolution,
+      'terminationHistory.$.resolutionNote': resolutionNote,
+      ...(completesTenancy ? { status: 'COMPLETED', completedAt: resolvedAt } : {}),
+    },
+  };
+  const resolvedBooking = await Booking.findOneAndUpdate(
+    {
+      _id: booking._id,
+      status: 'APPROVED',
+      terminationRequestStatus: 'DISPUTED',
+      completionRequestedBy: { $in: [null, ''] },
+      terminationHistory: { $elemMatch: { status: 'DISPUTED' } },
+    },
+    update,
+    { new: true }
+  );
+  if (!resolvedBooking) {
+    throw completionError('The disputed request changed while it was being resolved. Refresh and try again.');
+  }
+
+  if (completesTenancy) await releasePropertyIfNoApprovedBookings(booking.property);
+  return { booking: serializeBooking(resolvedBooking), completed: completesTenancy };
+}
+
 export async function resolveBookingAvailability(id, actor) {
   if (!actor?.id || actor.role !== 'ADMIN') {
     const error = new Error('Only admins can resolve disputed booking availability');
@@ -485,6 +738,9 @@ export async function resolveBookingAvailability(id, actor) {
   }
   if (booking.status !== 'APPROVED') {
     throw completionError('Only an active confirmed booking can be resolved.');
+  }
+  if (['PENDING', 'DISPUTED'].includes(booking.terminationRequestStatus)) {
+    throw completionError('Use the early termination dispute resolution for an open termination request.');
   }
 
   const resolvedBooking = await Booking.findOneAndUpdate(

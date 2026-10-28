@@ -7,11 +7,8 @@ const api = axios.create({
 });
 
 api.interceptors.request.use(config => {
-	const token = window.localStorage.getItem("token");
-
-	if (token) {
-		config.headers.Authorization = `Bearer ${token}`;
-	}
+	config.withCredentials = true;
+	config.headers["X-HouseHunt-Request"] = "1";
 
 	if (config.data && !(config.data instanceof FormData)) {
 		config.headers["Content-Type"] = "application/json";
@@ -25,7 +22,7 @@ api.interceptors.response.use(
 	error => {
 		const payload = error.response?.data;
 
-		if (error.response?.status === 401 && window.localStorage.getItem("token")) {
+		if (error.response?.status === 401) {
 			window.dispatchEvent(new CustomEvent("househunt:session-expired"));
 		}
 

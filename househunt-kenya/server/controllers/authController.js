@@ -1,10 +1,12 @@
 import {
   getProfile,
+  logoutUser,
   loginUser,
   registerUser,
   requestPasswordReset,
   resetPassword,
 } from '../services/authService.js';
+import { clearAuthCookie, setAuthCookie } from '../utils/authCookie.js';
 import { recordAuditEvent } from '../services/auditLogService.js';
 import {
   validateLoginInput,
@@ -37,7 +39,8 @@ export async function login(req, res, next) {
       resourceType: 'user',
       resourceId: result.user.id || result.user._id,
     });
-    return sendResponse(res, 200, true, 'Login successful', result, []);
+    setAuthCookie(res, result.token);
+    return sendResponse(res, 200, true, 'Login successful', { user: result.user }, []);
   } catch (error) {
     next(error);
   }
@@ -49,7 +52,6 @@ export async function register(req, res, next) {
     if (!validation.success) {
       return sendResponse(res, 400, false, 'Validation failed', null, validation.errors);
     }
-
     const result = await registerUser(validation.data);
     await recordAuditEvent({
       actor: result.user,
@@ -58,7 +60,18 @@ export async function register(req, res, next) {
       resourceType: 'user',
       resourceId: result.user.id || result.user._id,
     });
-    return sendResponse(res, 201, true, 'Registration successful', result, []);
+    setAuthCookie(res, result.token);
+    return sendResponse(res, 201, true, 'Registration successful', { user: result.user }, []);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function logout(req, res, next) {
+  try {
+    await logoutUser(req.user?.id);
+    clearAuthCookie(res);
+    return sendResponse(res, 200, true, 'Signed out successfully', null, []);
   } catch (error) {
     next(error);
   }
@@ -107,6 +120,7 @@ export async function completePasswordReset(req, res, next) {
     }
 
     await resetPassword(validation.data);
+    clearAuthCookie(res);
     return sendResponse(res, 200, true, 'Password reset successfully. You can now sign in.', null, []);
   } catch (error) {
     next(error);

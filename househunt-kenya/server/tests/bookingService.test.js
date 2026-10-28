@@ -8,7 +8,9 @@ import {
   closeTestBooking,
   createBooking,
   markBookingAsTestData,
+  resolveEarlyTermination,
   resolveBookingAvailability,
+  updateEarlyTermination,
   updateBookingCompletion,
 } from '../services/bookingService.js';
 import Booking from '../models/Booking.js';
@@ -21,6 +23,23 @@ const originalBookingFindOneAndUpdate = Booking.findOneAndUpdate;
 const originalPropertyFindById = Property.findById;
 const originalPropertyFindOneAndUpdate = Property.findOneAndUpdate;
 const originalPropertyUpdateOne = Property.updateOne;
+
+function applyBookingUpdate(booking, update) {
+  const terminationRequest = booking.terminationHistory?.find(
+    item => item.status === 'PENDING' || item.status === 'DISPUTED'
+  );
+  for (const [path, value] of Object.entries(update.$set || {})) {
+    if (path.startsWith('terminationHistory.$.')) {
+      if (terminationRequest) terminationRequest[path.split('.').at(-1)] = value;
+      continue;
+    }
+    booking[path] = value;
+  }
+  if (update.$push?.terminationHistory) {
+    booking.terminationHistory ||= [];
+    booking.terminationHistory.push(update.$push.terminationHistory);
+  }
+}
 
 test('createBooking creates a pending booking for an approved available property', async () => {
   const created = [];
@@ -301,6 +320,8 @@ test('tenancy completion requires both parties and preserves legacy payment fiel
     landlord: landlordId,
     property: propertyId,
     status: 'APPROVED',
+    moveInDate: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000),
+    leaseMonths: 1,
     paymentStatus: 'PAID',
     amountPaid: 12000,
     completionRequestedBy: null,
@@ -360,6 +381,8 @@ test('tenancy completion ignores legacy pending booking payments', async () => {
     landlord: 'landlord-1',
     property: new mongoose.Types.ObjectId(),
     status: 'APPROVED',
+    moveInDate: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000),
+    leaseMonths: 1,
     completionRequestedBy: 'LANDLORD',
   };
   const property = { status: 'OCCUPIED' };
@@ -389,6 +412,85 @@ test('tenancy completion ignores legacy pending booking payments', async () => {
     Booking.findOne = originalFindOne;
     Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
     Property.updateOne = originalPropertyUpdateOne;
+  }
+});
+
+test('completing a booking does not reopen a property with an active external tenancy', async () => {
+  const booking = {
+    _id: new mongoose.Types.ObjectId(),
+    tenant: 'tenant-1',
+    landlord: 'landlord-1',
+    property: new mongoose.Types.ObjectId(),
+    status: 'APPROVED',
+    moveInDate: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000),
+    leaseMonths: 1,
+    completionRequestedBy: 'LANDLORD',
+  };
+  const property = {
+    status: 'OCCUPIED',
+    externalTenancies: [{ endedAt: null }],
+  };
+  Booking.findById = async () => booking;
+  Booking.findOneAndUpdate = async (_filter, update) => {
+    Object.assign(booking, update.$set);
+    return booking;
+  };
+  Booking.findOne = async () => null;
+  Property.updateOne = async (filter, update) => {
+    assert.deepEqual(filter.externalTenancies, { $not: { $elemMatch: { endedAt: null } } });
+    if (!property.externalTenancies.some(tenancy => !tenancy.endedAt)) {
+      property.status = update.$set.status;
+    }
+  };
+
+  try {
+    const result = await updateBookingCompletion(
+      booking._id,
+      { id: 'tenant-1', role: 'TENANT' },
+      'CONFIRM'
+    );
+    assert.equal(result.completed, true);
+    assert.equal(booking.status, 'COMPLETED');
+    assert.equal(property.status, 'OCCUPIED');
+  } finally {
+    Booking.findById = originalBookingFindById;
+    Booking.findOne = originalFindOne;
+    Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
+    Property.updateOne = originalPropertyUpdateOne;
+  }
+});
+
+test('tenancy completion is blocked until the agreed lease term ends', async () => {
+  const booking = {
+    _id: new mongoose.Types.ObjectId(),
+    tenant: 'tenant-1',
+    landlord: 'landlord-1',
+    property: new mongoose.Types.ObjectId(),
+    status: 'APPROVED',
+    moveInDate: new Date(),
+    leaseMonths: 1,
+    completionRequestedBy: 'LANDLORD',
+  };
+  let updateAttempted = false;
+  Booking.findById = async () => booking;
+  Booking.findOneAndUpdate = async () => {
+    updateAttempted = true;
+    return booking;
+  };
+
+  try {
+    await assert.rejects(
+      updateBookingCompletion(booking._id, { id: 'landlord-1', role: 'LANDLORD' }, 'REQUEST'),
+      /agreed lease term has not ended/
+    );
+    await assert.rejects(
+      updateBookingCompletion(booking._id, { id: 'tenant-1', role: 'TENANT' }, 'CONFIRM'),
+      /agreed lease term has not ended/
+    );
+    assert.equal(updateAttempted, false);
+  } finally {
+    Booking.findById = originalBookingFindById;
+    Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
   }
 });
 
@@ -432,6 +534,25 @@ test('only admins can resolve booking availability', async () => {
   );
 });
 
+test('legacy admin availability resolution cannot bypass an open termination dispute', async () => {
+  const booking = {
+    _id: new mongoose.Types.ObjectId(),
+    property: new mongoose.Types.ObjectId(),
+    status: 'APPROVED',
+    terminationRequestStatus: 'DISPUTED',
+  };
+  Booking.findById = async () => booking;
+
+  try {
+    await assert.rejects(
+      resolveBookingAvailability(booking._id, { id: 'admin-1', role: 'ADMIN' }),
+      error => error.status === 409
+    );
+  } finally {
+    Booking.findById = originalBookingFindById;
+  }
+});
+
 test('a completion request can be withdrawn by the party who made it', async () => {
   const booking = {
     _id: new mongoose.Types.ObjectId(),
@@ -461,6 +582,175 @@ test('a completion request can be withdrawn by the party who made it', async () 
     Booking.findById = originalBookingFindById;
     Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
   }
+});
+
+test('landlord early termination request can be agreed by tenant and releases an unoccupied listing', async () => {
+  const booking = {
+    _id: new mongoose.Types.ObjectId(),
+    tenant: 'tenant-1',
+    landlord: 'landlord-1',
+    property: new mongoose.Types.ObjectId(),
+    status: 'APPROVED',
+    completionRequestedBy: null,
+    terminationRequestStatus: 'NONE',
+  };
+  const property = { status: 'OCCUPIED' };
+  Booking.findById = async () => booking;
+  Booking.findOneAndUpdate = async (filter, update) => {
+    if (filter.terminationRequestStatus?.$in && booking.terminationRequestStatus !== 'NONE') return null;
+    if (filter.terminationRequestStatus === 'PENDING' && booking.terminationRequestStatus !== 'PENDING') return null;
+    applyBookingUpdate(booking, update);
+    return booking;
+  };
+  Booking.findOne = async () => null;
+  Property.updateOne = async (_filter, update) => { property.status = update.$set.status; };
+
+  try {
+    const request = await updateEarlyTermination(
+      booking._id,
+      { id: 'landlord-1', role: 'LANDLORD' },
+      'REQUEST',
+      'Tenant has repeatedly breached the agreed tenancy terms.'
+    );
+    assert.equal(request.booking.terminationRequestStatus, 'PENDING');
+    assert.match(request.booking.terminationReason, /repeatedly breached/);
+
+    const agreement = await updateEarlyTermination(
+      booking._id,
+      { id: 'tenant-1', role: 'TENANT' },
+      'AGREE'
+    );
+    assert.equal(agreement.completed, true);
+    assert.equal(booking.status, 'COMPLETED');
+    assert.equal(booking.terminationRequestStatus, 'AGREED');
+    assert.equal(booking.terminationResolution, 'MUTUAL_AGREEMENT');
+    assert.equal(booking.terminationHistory[0].status, 'AGREED');
+    assert.equal(property.status, 'AVAILABLE');
+  } finally {
+    Booking.findById = originalBookingFindById;
+    Booking.findOne = originalFindOne;
+    Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
+    Property.updateOne = originalPropertyUpdateOne;
+  }
+});
+
+test('disputed early termination stays active until an admin resolves it', async () => {
+  const booking = {
+    _id: new mongoose.Types.ObjectId(),
+    tenant: 'tenant-1',
+    landlord: 'landlord-1',
+    property: new mongoose.Types.ObjectId(),
+    status: 'APPROVED',
+    completionRequestedBy: null,
+    terminationRequestStatus: 'NONE',
+  };
+  const property = { status: 'OCCUPIED' };
+  Booking.findById = async () => booking;
+  Booking.findOneAndUpdate = async (_filter, update) => {
+    applyBookingUpdate(booking, update);
+    return booking;
+  };
+  Booking.findOne = async () => null;
+  Property.updateOne = async (_filter, update) => { property.status = update.$set.status; };
+
+  try {
+    await updateEarlyTermination(
+      booking._id,
+      { id: 'landlord-1', role: 'LANDLORD' },
+      'REQUEST',
+      'Tenant has repeatedly breached the agreed tenancy terms.'
+    );
+    const dispute = await updateEarlyTermination(
+      booking._id,
+      { id: 'tenant-1', role: 'TENANT' },
+      'DISPUTE'
+    );
+    assert.equal(dispute.booking.terminationRequestStatus, 'DISPUTED');
+    assert.equal(booking.status, 'APPROVED');
+
+    const resolution = await resolveEarlyTermination(
+      booking._id,
+      { id: 'admin-1', role: 'ADMIN' },
+      'KEEP_ACTIVE',
+      'The reported issue was not substantiated.'
+    );
+    assert.equal(resolution.completed, false);
+    assert.equal(booking.status, 'APPROVED');
+    assert.equal(booking.terminationRequestStatus, 'RESOLVED');
+    assert.equal(booking.terminationResolution, 'KEEP_ACTIVE');
+    assert.equal(booking.terminationResolutionNote, 'The reported issue was not substantiated.');
+    assert.equal(booking.terminationHistory[0].status, 'RESOLVED');
+    assert.equal(booking.terminationHistory[0].resolution, 'KEEP_ACTIVE');
+    assert.equal(property.status, 'OCCUPIED');
+  } finally {
+    Booking.findById = originalBookingFindById;
+    Booking.findOne = originalFindOne;
+    Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
+    Property.updateOne = originalPropertyUpdateOne;
+  }
+});
+
+test('admin can end a disputed tenancy and only release the property after resolution', async () => {
+  const booking = {
+    _id: new mongoose.Types.ObjectId(),
+    property: new mongoose.Types.ObjectId(),
+    status: 'APPROVED',
+    completionRequestedBy: null,
+    terminationRequestStatus: 'DISPUTED',
+    terminationHistory: [{ reason: 'Reason provided by landlord', status: 'DISPUTED' }],
+  };
+  const property = { status: 'OCCUPIED' };
+  Booking.findById = async () => booking;
+  Booking.findOneAndUpdate = async (_filter, update) => {
+    applyBookingUpdate(booking, update);
+    return booking;
+  };
+  Booking.findOne = async () => null;
+  Property.updateOne = async (_filter, update) => { property.status = update.$set.status; };
+
+  try {
+    const result = await resolveEarlyTermination(
+      booking._id,
+      { id: 'admin-1', role: 'ADMIN' },
+      'END_TENANCY',
+      'Review found the reported breach substantiated.'
+    );
+    assert.equal(result.completed, true);
+    assert.equal(booking.status, 'COMPLETED');
+    assert.equal(booking.terminationResolution, 'END_TENANCY');
+    assert.equal(booking.terminationHistory[0].resolutionNote, 'Review found the reported breach substantiated.');
+    assert.equal(property.status, 'AVAILABLE');
+  } finally {
+    Booking.findById = originalBookingFindById;
+    Booking.findOne = originalFindOne;
+    Booking.findOneAndUpdate = originalBookingFindOneAndUpdate;
+    Property.updateOne = originalPropertyUpdateOne;
+  }
+});
+
+test('only the tenant may request and only a disputed termination can be ended by admin', async () => {
+  await assert.rejects(
+    updateEarlyTermination(
+      'booking-1',
+      { id: 'tenant-1', role: 'TENANT' },
+      'REQUEST',
+      'A sufficiently clear reason'
+    ),
+    error => error.status === 403
+  );
+  await assert.rejects(
+    updateEarlyTermination(
+      'booking-1',
+      { id: 'landlord-1', role: 'LANDLORD' },
+      'REQUEST',
+      'short'
+    ),
+    error => error.status === 400
+  );
+  await assert.rejects(
+    resolveEarlyTermination('booking-1', { id: 'landlord-1', role: 'LANDLORD' }, 'END_TENANCY'),
+    error => error.status === 403
+  );
 });
 
 test('only an admin can explicitly flag unpaid data as test data', async () => {

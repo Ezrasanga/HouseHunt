@@ -28,21 +28,35 @@ function sanitizeUser(user, includeContact = false) {
   if (includeContact) {
     result.phone = user.phone || '';
     result.email = user.email || '';
+    result.whatsapp = user.whatsapp || '';
+    result.ig = user.ig || '';
+    result.fb = user.fb || '';
+    result.tt = user.tt || '';
+    result.tw = user.tw || '';
   }
   return result;
 }
 
-function sanitizeProperty(property, { revealContacts = false } = {}) {
+function sanitizeProperty(property, { revealContacts = false, includeExternalTenancies = false } = {}) {
   if (!property) return null;
   const plain = property.toObject ? property.toObject() : property;
   const location = plain.location ? { ...plain.location } : plain.location;
+  if (!includeExternalTenancies) delete plain.externalTenancies;
   if (location && !revealContacts) delete location.street;
   return {
     ...plain,
     location,
     owner: plain.owner && typeof plain.owner === 'object' ? sanitizeUser(plain.owner, revealContacts) : plain.owner,
     contact: revealContacts && plain.owner && typeof plain.owner === 'object'
-      ? { phone: plain.owner.phone || '', email: plain.owner.email || '' }
+      ? {
+        phone: plain.owner.phone || '',
+        email: plain.owner.email || '',
+        whatsapp: plain.owner.whatsapp || '',
+        ig: plain.owner.ig || '',
+        fb: plain.owner.fb || '',
+        tt: plain.owner.tt || '',
+        tw: plain.owner.tw || '',
+      }
       : null,
     unlocked: revealContacts,
   };
@@ -74,6 +88,10 @@ function createPropertyLifecycleError(message) {
   return error;
 }
 
+function activeExternalTenancy(property) {
+  return property.externalTenancies?.find(tenancy => !tenancy.endedAt) || null;
+}
+
 async function assertPropertyCanBeMadeAvailable(propertyId) {
   const activeBooking = await Booking.exists({
     property: propertyId,
@@ -84,6 +102,54 @@ async function assertPropertyCanBeMadeAvailable(propertyId) {
       'This property has an active confirmed booking. Complete or cancel that booking before marking it available.'
     );
   }
+}
+
+function externalLeaseTermEndsAt(tenancy) {
+  const moveInDate = new Date(tenancy.moveInDate);
+  const leaseMonths = Number(tenancy.leaseMonths);
+  if (Number.isNaN(moveInDate.getTime()) || !Number.isSafeInteger(leaseMonths) || leaseMonths < 1) {
+    throw createPropertyLifecycleError('The external tenancy is missing a valid move-in date or lease duration.');
+  }
+
+  const monthStart = new Date(Date.UTC(
+    moveInDate.getUTCFullYear(),
+    moveInDate.getUTCMonth() + leaseMonths,
+    1
+  ));
+  const lastDayOfMonth = new Date(Date.UTC(
+    monthStart.getUTCFullYear(),
+    monthStart.getUTCMonth() + 1,
+    0
+  )).getUTCDate();
+  const termEndsAt = new Date(Date.UTC(
+    monthStart.getUTCFullYear(),
+    monthStart.getUTCMonth(),
+    Math.min(moveInDate.getUTCDate(), lastDayOfMonth) + 1
+  ));
+  if (Number.isNaN(termEndsAt.getTime())) {
+    throw createPropertyLifecycleError('The external lease term could not be calculated from the recorded dates.');
+  }
+  return termEndsAt;
+}
+
+function validateExternalTenancy(payload = {}) {
+  const tenantName = typeof payload.tenantName === 'string' ? payload.tenantName.trim() : '';
+  const moveInDateValue = typeof payload.moveInDate === 'string' ? payload.moveInDate : '';
+  const moveInDate = new Date(`${moveInDateValue}T00:00:00.000Z`);
+  const leaseMonths = Number(payload.leaseMonths);
+  if (!tenantName || tenantName.length > 120) {
+    throw createPropertyLifecycleError('Enter the external tenant name (up to 120 characters).');
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(moveInDateValue) ||
+      Number.isNaN(moveInDate.getTime()) ||
+      moveInDate.toISOString().slice(0, 10) !== moveInDateValue ||
+      moveInDate.getTime() > Date.now()) {
+    throw createPropertyLifecycleError('Enter a valid move-in date that is not in the future.');
+  }
+  if (!Number.isInteger(leaseMonths) || leaseMonths < 1) {
+    throw createPropertyLifecycleError('Lease duration must be a whole number of at least one month.');
+  }
+  return { tenantName, moveInDate, leaseMonths };
 }
 
 function parseBoolean(value) {
@@ -234,7 +300,9 @@ export async function listProperties(query = {}, viewer = null) {
   ]);
 
   return {
-    properties: properties.map(sanitizeProperty),
+    properties: properties.map(property => sanitizeProperty(property, {
+      includeExternalTenancies: isAdmin || isLandlord,
+    })),
     pagination: buildPagination(page, limit, total),
   };
 }
@@ -246,7 +314,9 @@ export async function getProperty(id, viewer = null) {
     throw error;
   }
 
-  const property = await Property.findById(id).populate('owner', 'firstName lastName profileImage phone email').lean();
+  const property = await Property.findById(id)
+    .populate('owner', 'firstName lastName profileImage phone email whatsapp ig fb tt tw')
+    .lean();
   if (!property) {
     const error = new Error('Property not found');
     error.status = 404;
@@ -274,7 +344,12 @@ export async function getProperty(id, viewer = null) {
   }
 
   const revealContacts = isAdmin || isOwner || Boolean(hasUnlock);
-  return { property: sanitizeProperty(property, { revealContacts }) };
+  return {
+    property: sanitizeProperty(property, {
+      revealContacts,
+      includeExternalTenancies: isAdmin || isOwner,
+    }),
+  };
 }
 
 export async function createProperty(actor, payload = {}) {
@@ -402,7 +477,7 @@ export async function updateProperty(id, actor, payload = {}) {
   }
 
   const populated = await Property.findById(updatedProperty._id).populate('owner', 'firstName lastName profileImage').lean();
-  return { property: sanitizeProperty(populated) };
+  return { property: sanitizeProperty(populated, { includeExternalTenancies: actor.role === 'ADMIN' }) };
 }
 
 export async function deleteProperty(id, actor) {
@@ -526,7 +601,7 @@ export async function approveProperty(id, actor, payload = {}) {
   }
 
   const populated = await Property.findById(updatedProperty._id).populate('owner', 'firstName lastName profileImage').lean();
-  return { property: sanitizeProperty(populated) };
+  return { property: sanitizeProperty(populated, { includeExternalTenancies: true }) };
 }
 
 export async function updatePropertyStatus(id, actor, payload = {}) {
@@ -556,7 +631,9 @@ export async function updatePropertyStatus(id, actor, payload = {}) {
     throw error;
   }
 
-  const validStatuses = ['AVAILABLE', 'OCCUPIED', 'PENDING', 'HIDDEN'];
+  const validStatuses = actor.role === 'LANDLORD'
+    ? ['AVAILABLE', 'OCCUPIED']
+    : ['AVAILABLE', 'HIDDEN'];
   const newStatus = String(payload?.status || '').toUpperCase();
   if (!validStatuses.includes(newStatus)) {
     const error = new Error('Invalid property status');
@@ -564,11 +641,118 @@ export async function updatePropertyStatus(id, actor, payload = {}) {
     throw error;
   }
 
-  if (actor.role === 'LANDLORD' && (!property.isApproved || !['AVAILABLE', 'OCCUPIED'].includes(newStatus))) {
+  if (actor.role === 'LANDLORD' && !property.isApproved) {
     throw createPropertyLifecycleError('Landlords can change availability only for approved listings.');
   }
 
+  if (newStatus === property.status && newStatus === 'HIDDEN') {
+    throw createPropertyLifecycleError('The listing is already in that status.');
+  }
+
+  if (newStatus === 'OCCUPIED') {
+    if (actor.role !== 'LANDLORD' || !['AVAILABLE', 'OCCUPIED'].includes(property.status)) {
+      throw createPropertyLifecycleError('Only an available listing or an untracked occupied listing can record an external tenancy.');
+    }
+    if (activeExternalTenancy(property)) {
+      throw createPropertyLifecycleError('This property already has an active external tenancy.');
+    }
+    const externalTenancy = validateExternalTenancy(payload.externalTenancy);
+    externalLeaseTermEndsAt(externalTenancy);
+    const activeBooking = await Booking.exists({ property: property._id, status: 'APPROVED' });
+    if (activeBooking) {
+      throw createPropertyLifecycleError('This property has an active confirmed booking. Manage that tenancy through its booking instead.');
+    }
+
+    const updatedProperty = await Property.findOneAndUpdate(
+      { _id: property._id, owner: actor.id, isApproved: true, status: property.status },
+      {
+        $set: { status: 'OCCUPIED' },
+        $push: {
+          externalTenancies: {
+            ...externalTenancy,
+            recordedAt: new Date(),
+            recordedBy: actor.id,
+          },
+        },
+      },
+      { new: true, runValidators: true }
+    );
+    if (!updatedProperty) {
+      throw createPropertyLifecycleError(
+        'The property changed while the external tenancy was being recorded. Refresh and try again.'
+      );
+    }
+
+    const populated = await Property.findById(updatedProperty._id).populate('owner', 'firstName lastName profileImage').lean();
+    return { property: sanitizeProperty(populated, { includeExternalTenancies: true }) };
+  }
+
   if (newStatus === 'AVAILABLE') {
+    if (actor.role === 'ADMIN' && !property.isApproved) {
+      throw createPropertyLifecycleError('Only approved listings can be made available.');
+    }
+
+    const activeBooking = await Booking.exists({ property: property._id, status: 'APPROVED' });
+    if (activeBooking) {
+      throw createPropertyLifecycleError(
+        'This property has an active confirmed booking. Complete or cancel that booking before marking it available.'
+      );
+    }
+
+    const tenancy = activeExternalTenancy(property);
+    if (tenancy && actor.role === 'LANDLORD') {
+      if (payload.confirmVacant !== true) {
+        throw createPropertyLifecycleError('Confirm that the external tenancy has ended and the property is vacant.');
+      }
+      if (Date.now() < externalLeaseTermEndsAt(tenancy).getTime()) {
+        throw createPropertyLifecycleError('The recorded external lease term has not ended yet.');
+      }
+      const updatedProperty = await Property.findOneAndUpdate(
+        {
+          _id: property._id,
+          owner: actor.id,
+          isApproved: true,
+          status: 'OCCUPIED',
+          externalTenancies: {
+            $elemMatch: {
+              _id: tenancy._id,
+              endedAt: null,
+              moveInDate: tenancy.moveInDate,
+              leaseMonths: tenancy.leaseMonths,
+            },
+          },
+        },
+        {
+          $set: {
+            status: 'AVAILABLE',
+            availabilityConfirmedAt: new Date(),
+            'externalTenancies.$.endedAt': new Date(),
+            'externalTenancies.$.endedBy': actor.id,
+          },
+        },
+        { new: true, runValidators: true }
+      );
+      if (!updatedProperty) {
+        throw createPropertyLifecycleError(
+          'The external tenancy changed while availability was being confirmed. Refresh and try again.'
+        );
+      }
+
+      const populated = await Property.findById(updatedProperty._id).populate('owner', 'firstName lastName profileImage').lean();
+      return { property: sanitizeProperty(populated, { includeExternalTenancies: true }) };
+    }
+
+    if (actor.role === 'LANDLORD') {
+      throw createPropertyLifecycleError(
+        'This listing has no active external tenancy to end. Complete its active HouseHunt tenancy instead.'
+      );
+    }
+    if (activeExternalTenancy(property)) {
+      throw createPropertyLifecycleError('An external tenancy is still active and cannot be bypassed by an admin status change.');
+    }
+    if (payload.confirmVacant !== true) {
+      throw createPropertyLifecycleError('Admin availability corrections require explicit vacancy confirmation.');
+    }
     await assertPropertyCanBeMadeAvailable(property._id);
   }
 
@@ -578,9 +762,6 @@ export async function updatePropertyStatus(id, actor, payload = {}) {
     ...(actor.role === 'LANDLORD' ? { owner: actor.id, isApproved: true } : {}),
   };
   const updates = { status: newStatus };
-  if (actor.role === 'LANDLORD' && newStatus === 'AVAILABLE') {
-    updates.availabilityConfirmedAt = new Date();
-  }
   const updatedProperty = await Property.findOneAndUpdate(
     filter,
     { $set: updates },
@@ -593,7 +774,7 @@ export async function updatePropertyStatus(id, actor, payload = {}) {
   }
 
   const populated = await Property.findById(updatedProperty._id).populate('owner', 'firstName lastName profileImage').lean();
-  return { property: sanitizeProperty(populated) };
+  return { property: sanitizeProperty(populated, { includeExternalTenancies: actor.role === 'ADMIN' }) };
 }
 
 export async function confirmPropertyAvailability(id, actor) {
@@ -624,6 +805,10 @@ export async function confirmPropertyAvailability(id, actor) {
 
   if (!property.isApproved || property.status !== 'AVAILABLE') {
     throw createPropertyLifecycleError('Only approved available listings can be confirmed as available.');
+  }
+
+  if (activeExternalTenancy(property)) {
+    throw createPropertyLifecycleError('An active external tenancy prevents confirming this listing as available.');
   }
 
   await assertPropertyCanBeMadeAvailable(property._id);

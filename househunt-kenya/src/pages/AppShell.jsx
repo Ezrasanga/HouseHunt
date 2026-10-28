@@ -15,6 +15,7 @@ import {
   closeTestBooking,
   getAdminBookings,
   markBookingAsTestData,
+  resolveEarlyTermination,
   resolveBookingAvailability,
 } from "../services/bookingService";
 import {
@@ -57,6 +58,11 @@ const profileFields = user => ({
   firstName: user?.data?.firstName || user?.data?.name?.split(" ")[0] || "",
   lastName: user?.data?.lastName || user?.data?.name?.split(" ").slice(1).join(" ") || "",
   phone: user?.data?.phone || "",
+  whatsapp: user?.data?.whatsapp || "",
+  ig: user?.data?.ig || "",
+  fb: user?.data?.fb || "",
+  tt: user?.data?.tt || "",
+  tw: user?.data?.tw || "",
   profileImage: user?.data?.profileImage || "",
 });
 
@@ -64,6 +70,47 @@ const profileFields = user => ({
 const APP_INITIALIZED_AT = Date.now();
 const KES = n=>`KSh ${Number(n).toLocaleString()}`;
 const todayStr = ()=>new Date().toISOString().split("T")[0];
+const leaseTermEndsAt = booking => {
+  const moveInDate = new Date(booking?.moveInDate);
+  const leaseMonths = Number(booking?.leaseMonths);
+  if (Number.isNaN(moveInDate.getTime()) || !Number.isInteger(leaseMonths) || leaseMonths < 1) return null;
+
+  const monthStart = new Date(Date.UTC(
+    moveInDate.getUTCFullYear(),
+    moveInDate.getUTCMonth() + leaseMonths,
+    1
+  ));
+  const lastDayOfMonth = new Date(Date.UTC(
+    monthStart.getUTCFullYear(),
+    monthStart.getUTCMonth() + 1,
+    0
+  )).getUTCDate();
+  return new Date(Date.UTC(
+    monthStart.getUTCFullYear(),
+    monthStart.getUTCMonth(),
+    Math.min(moveInDate.getUTCDate(), lastDayOfMonth) + 1
+  ));
+};
+const leaseTermEndLabel = booking => {
+  const endsAt = leaseTermEndsAt(booking);
+  return endsAt
+    ? new Date(endsAt.getTime() - 24 * 60 * 60 * 1000).toLocaleDateString("en-KE", { dateStyle: "medium", timeZone: "UTC" })
+    : "";
+};
+const externalTenancyFor = property => property?.externalTenancies?.find(tenancy => !tenancy.endedAt) || null;
+const externalLeaseTermEndsAt = tenancy => tenancy ? leaseTermEndsAt(tenancy) : null;
+const externalLeaseEndLabel = tenancy => {
+  const endsAt = externalLeaseTermEndsAt(tenancy);
+  return endsAt
+    ? new Date(endsAt.getTime() - 24 * 60 * 60 * 1000).toLocaleDateString("en-KE", { dateStyle: "medium", timeZone: "UTC" })
+    : "";
+};
+const externalDateLabel = value => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "Unknown"
+    : date.toLocaleDateString("en-KE", { dateStyle: "medium", timeZone: "UTC" });
+};
 const bookingLocation = location => {
   if (typeof location === "string") return location;
   if (!location || typeof location !== "object") return "";
@@ -184,6 +231,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [amenities, setAmenities] = useState([]);
   const [sort, setSort] = useState("featured");
   const [propertyPage, setPropertyPage] = useState(1);
+  const [currentTime, setCurrentTime] = useState(APP_INITIALIZED_AT);
   const propertyFilters = { county, town, bedrooms, amenities, sort };
   const publicPropertyQuery = user?.role === "admin" || user?.role === "landlord"
     ? {}
@@ -209,17 +257,22 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const {
     tenantBookings,
     landlordBookings,
+    activeLandlordBookings,
     landlordBookingsPagination,
+    activeTenancyLoading,
+    activeTenancyError,
     tenantLoading,
     landlordLoading,
     tenantError,
     landlordError,
     loadLandlordBookings,
+    loadActiveLandlordBookings,
     createBooking,
     cancelBooking,
     approveBooking,
     rejectBooking,
     updateBookingCompletion,
+    updateEarlyTermination,
   } = useBookings();
   const [landlords, setLandlords] = useState([]);
   const [tenants, setTenants] = useState([]);
@@ -256,7 +309,12 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const [unlockedPropertyAccess, setUnlockedPropertyAccess] = useState({ userId: null, ids: [] });
   const unlockedPropertyIds = unlockedPropertyAccess.userId === user?.data?.id ? unlockedPropertyAccess.ids : [];
   const [completionLoadingId, setCompletionLoadingId] = useState("");
+  const [terminationReason, setTerminationReason] = useState("");
   const [confModal, setConfModal] = useState(null);
+  const [externalTenancyForm, setExternalTenancyForm] = useState({ tenantName: "", moveInDate: "", leaseMonths: "6" });
+  const externalTenancyFormRef = useRef(externalTenancyForm);
+  const [externalTenancyError, setExternalTenancyError] = useState("");
+  const [propertyStatusUpdatingId, setPropertyStatusUpdatingId] = useState("");
   const [bookingProperty, setBookingProperty] = useState(null);
   const [bookingFormOpen, setBookingFormOpen] = useState(false);
   const [bookingForm, setBookingForm] = useState({ moveInDate: "", leaseMonths: "6", notes: "" });
@@ -306,6 +364,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const modalOpenerRef = useRef(null);
   const mainRef = useRef(null);
   const previousPathname = useRef(location.pathname);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setCurrentTime(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const closeModal = useCallback(() => {
     setSelProp(null);
@@ -643,7 +706,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   const myTaken = myProps.filter(p=>p.status==="taken");
   const myBoosted = myProps.filter(p=>p.boosted);
   const myPending = myProps.filter(p=>p.approved===false);
-  const landlordDashboardNow = APP_INITIALIZED_AT;
+  const landlordDashboardNow = currentTime;
   const availabilityReminderMs = 30 * 24 * 60 * 60 * 1000;
   const boostReminderMs = 7 * 24 * 60 * 60 * 1000;
   const myAvailabilityDue = myProps.filter(property => {
@@ -755,8 +818,21 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     }
   };
 
-  const logout = () => { clearAdminCollections(); logoutUser(); setTab("home"); msg("Signed out.","info"); };
+  const logout = async () => {
+    try {
+      await logoutUser();
+      clearAdminCollections();
+      setTab("home");
+      msg("Signed out.", "info");
+    } catch (error) {
+      msg(error.message || "Unable to sign out. Please try again.", "err");
+    }
+  };
   const toggleFavorite = id => {
+    if (!user) {
+      setAuthModal("tenant");
+      return;
+    }
     void toggleSavedHome(id).catch(error => msg(error.message || "Could not update saved homes.", "err"));
   };
   const shareProperty = async property => {
@@ -794,14 +870,91 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
   };
 
   const markTaken = id => {
-    const p=props.find(x=>x.id===id);
-    const nextStatus = p?.status === "taken" ? "AVAILABLE" : "OCCUPIED";
-    updatePropertyStatusApi(id, nextStatus)
-      .then(() => {
-        msg(nextStatus === "AVAILABLE" ? "Marked available." : "Marked taken.","info");
-        void refreshProperties();
-      })
-      .catch(error => msg(error.response?.data?.message || error.message, "err"));
+    const initialForm = { tenantName: "", moveInDate: todayStr(), leaseMonths: "6" };
+    externalTenancyFormRef.current = initialForm;
+    setExternalTenancyForm(initialForm);
+    setExternalTenancyError("");
+    setConfModal({
+      type: "external-tenancy",
+      propertyId: id,
+      title: "Record an external tenancy?",
+      msg2: "Use this for a tenancy arranged outside HouseHunt. The listing will be marked or remain taken, and the tenant name and lease term recorded privately for you and admins. Active HouseHunt bookings cannot be replaced with an external record.",
+      confirmLabel: "Record tenancy & mark taken",
+      onConfirm: async () => {
+        const formData = externalTenancyFormRef.current;
+        const leaseMonths = Number(formData.leaseMonths);
+        if (!formData.tenantName.trim() || !formData.moveInDate ||
+            !Number.isInteger(leaseMonths) || leaseMonths < 1) {
+          setExternalTenancyError("Enter the tenant name, move-in date, and a whole lease duration of at least one month.");
+          return;
+        }
+
+        setExternalTenancyError("");
+        setPropertyStatusUpdatingId(id);
+        try {
+          await updatePropertyStatusApi(id, "OCCUPIED", {
+            externalTenancy: {
+              tenantName: formData.tenantName.trim(),
+              moveInDate: formData.moveInDate,
+              leaseMonths,
+            },
+          });
+          setConfModal(null);
+          msg("External tenancy recorded. The listing is now marked taken.", "ok");
+          await refreshProperties();
+        } catch (error) {
+          msg(error.response?.data?.message || error.message || "Unable to record the external tenancy.", "err");
+        } finally {
+          setPropertyStatusUpdatingId("");
+        }
+      },
+    });
+  };
+
+  const markAvailable = id => {
+    setConfModal({
+      type: "external-vacancy",
+      propertyId: id,
+      title: "Confirm the property is vacant?",
+      msg2: "Confirm that the recorded external tenancy has ended and the property is physically vacant. HouseHunt will keep the tenancy record and mark the listing available.",
+      confirmLabel: "Confirm vacant & mark available",
+      onConfirm: async () => {
+        setPropertyStatusUpdatingId(id);
+        try {
+          await updatePropertyStatusApi(id, "AVAILABLE", { confirmVacant: true });
+          setConfModal(null);
+          msg("Vacancy confirmed. The listing is now available.", "ok");
+          await refreshProperties();
+        } catch (error) {
+          msg(error.response?.data?.message || error.message || "Unable to confirm vacancy.", "err");
+        } finally {
+          setPropertyStatusUpdatingId("");
+        }
+      },
+    });
+  };
+
+  const resolveLegacyOccupancy = id => {
+    setConfModal({
+      type: "admin-vacancy",
+      propertyId: id,
+      title: "Resolve an untracked occupied listing?",
+      msg2: "Use this only after confirming there is no active HouseHunt booking and the property is physically vacant. The server blocks this correction while an active booking or external tenancy remains.",
+      confirmLabel: "Confirm vacant & reopen listing",
+      onConfirm: async () => {
+        setPropertyStatusUpdatingId(id);
+        try {
+          await updatePropertyStatusApi(id, "AVAILABLE", { confirmVacant: true });
+          setConfModal(null);
+          msg("Legacy occupancy resolved. The listing is now available.", "ok");
+          await refreshProperties();
+        } catch (error) {
+          msg(error.response?.data?.message || error.message || "Unable to resolve the listing status.", "err");
+        } finally {
+          setPropertyStatusUpdatingId("");
+        }
+      },
+    });
   };
 
   const confirmAvailability = async id => {
@@ -815,14 +968,6 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
     } finally {
       setAvailabilityConfirmingId("");
     }
-  };
-
-  const adminVerify = id => {
-    updatePropertyStatusApi(id, "OCCUPIED")
-      .then(() => {
-        msg("✅ Verified as Taken.","ok");
-      })
-      .catch(error => msg(error.response?.data?.message || error.message, "err"));
   };
 
   const approveProp = id => {
@@ -1277,8 +1422,29 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
 
   const renderCompletionControls = booking => {
     if (booking.status !== "APPROVED") return null;
+    if (["PENDING", "DISPUTED"].includes(booking.terminationRequestStatus)) return null;
     const role = String(user?.role || "").toUpperCase();
     const requester = booking.completionRequestedBy;
+    const leaseEnd = leaseTermEndsAt(booking);
+    if (!leaseEnd || APP_INITIALIZED_AT < leaseEnd.getTime()) {
+      return (
+        <>
+          <span className="arow-meta" role="status">
+            {requester ? "A completion request is pending, but it cannot be confirmed yet. " : ""}
+            Completion becomes available after {leaseTermEndLabel(booking) || "the agreed lease end date"}. For an earlier end, use the early termination process.
+          </span>
+          {requester === role && (
+            <button
+              className="bghost"
+              disabled={completionLoadingId === booking.id}
+              onClick={() => requestBookingCompletion(booking, "WITHDRAW")}
+            >
+              Withdraw request
+            </button>
+          )}
+        </>
+      );
+    }
     if (requester === role) {
       return (
         <>
@@ -1308,6 +1474,95 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
         </button>
       </>
     );
+  };
+
+  const requestEarlyTerminationAction = (booking, action) => {
+    const prompts = {
+      REQUEST: {
+        title: "Request early tenancy termination?",
+        message: "Share a clear reason with the tenant. The tenancy remains active unless the tenant agrees or an admin resolves a dispute.",
+        confirmLabel: "Send request",
+      },
+      AGREE: {
+        title: "Agree to end the tenancy?",
+        message: "This ends the active tenancy by mutual agreement. The listing becomes available only if no other active tenancy remains.",
+        confirmLabel: "Agree and end tenancy",
+      },
+      DISPUTE: {
+        title: "Ask an admin to review?",
+        message: "The tenancy will remain active while an admin reviews the landlord’s early termination request.",
+        confirmLabel: "Dispute request",
+      },
+      WITHDRAW: {
+        title: "Withdraw early termination request?",
+        message: "The request will close and the tenancy will remain active.",
+        confirmLabel: "Withdraw request",
+      },
+    };
+    const prompt = prompts[action];
+    if (action === "REQUEST") setTerminationReason("");
+    setConfModal({
+      type: "completion",
+      title: prompt.title,
+      msg2: prompt.message,
+      confirmLabel: prompt.confirmLabel,
+      terminationAction: action,
+      onConfirm: async () => {
+        if (action === "REQUEST" && terminationReason.trim().length < 10) {
+          msg("Please provide a reason of at least 10 characters.", "err");
+          return;
+        }
+        setConfModal(null);
+        setCompletionLoadingId(booking.id);
+        try {
+          const updated = await updateEarlyTermination(
+            booking.id,
+            action,
+            action === "REQUEST" ? terminationReason.trim() : ""
+          );
+          msg(updated.status === "COMPLETED"
+            ? "Tenancy ended by agreement. Availability was updated if no other active tenancy remains."
+            : action === "REQUEST"
+              ? "Early termination request sent to the tenant."
+              : action === "DISPUTE"
+                ? "The request is disputed and awaiting admin review."
+                : action === "WITHDRAW"
+                  ? "Early termination request withdrawn."
+                  : "You agreed to end the tenancy.");
+          await refreshProperties();
+        } catch (error) {
+          msg(error.response?.data?.message || error.message || "Unable to update early termination request.", "err");
+        } finally {
+          setCompletionLoadingId("");
+        }
+      },
+    });
+  };
+
+  const renderTerminationControls = booking => {
+    if (booking.status !== "APPROVED") return null;
+    const requestStatus = booking.terminationRequestStatus || "NONE";
+    const role = String(user?.role || "").toUpperCase();
+    if (requestStatus === "PENDING") {
+      if (role === "LANDLORD") {
+        return <button className="bghost" disabled={completionLoadingId === booking.id} onClick={() => requestEarlyTerminationAction(booking, "WITHDRAW")}>Withdraw request</button>;
+      }
+      if (role === "TENANT") {
+        return (
+          <>
+            <button className="bapp" disabled={completionLoadingId === booking.id} onClick={() => requestEarlyTerminationAction(booking, "AGREE")}>Agree to end tenancy</button>
+            <button className="bdel" disabled={completionLoadingId === booking.id} onClick={() => requestEarlyTerminationAction(booking, "DISPUTE")}>Dispute request</button>
+          </>
+        );
+      }
+    }
+    if (requestStatus === "DISPUTED") {
+      return <span className="arow-meta" role="status">Disputed · awaiting admin review</span>;
+    }
+    if (role === "LANDLORD" && !booking.completionRequestedBy) {
+      return <button className="bdel" disabled={completionLoadingId === booking.id} onClick={() => requestEarlyTerminationAction(booking, "REQUEST")}>Request early termination</button>;
+    }
+    return null;
   };
 
   useEffect(() => {
@@ -1370,6 +1625,36 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
           msg("Booking resolved. Availability changed only if no other confirmed booking remains.", "ok");
         } catch (error) {
           msg(error.response?.data?.message || error.message || "Unable to resolve booking availability.", "err");
+        }
+      },
+    });
+  };
+
+  const requestResolveEarlyTermination = (booking, resolution) => {
+    const endsTenancy = resolution === "END_TENANCY";
+    setConfModal({
+      type: "completion",
+      title: endsTenancy ? "End this tenancy?" : "Keep this tenancy active?",
+      confirmLabel: endsTenancy ? "End tenancy" : "Keep active",
+      msg2: endsTenancy
+        ? "This resolves the dispute in favor of ending the tenancy. The listing becomes available only if no other active tenancy remains."
+        : "This closes the termination request. The tenancy remains active and the listing stays occupied.",
+      onConfirm: async () => {
+        setConfModal(null);
+        setCompletionLoadingId(booking.id);
+        try {
+          await resolveEarlyTermination(booking.id, resolution);
+          await Promise.all([
+            loadAdminBookings(adminBookingsPagination?.page || 1),
+            refreshProperties(),
+          ]);
+          msg(endsTenancy
+            ? "Dispute resolved. Tenancy ended and availability updated if appropriate."
+            : "Dispute resolved. The tenancy remains active.", "ok");
+        } catch (error) {
+          msg(error.response?.data?.message || error.message || "Unable to resolve early termination dispute.", "err");
+        } finally {
+          setCompletionLoadingId("");
         }
       },
     });
@@ -1660,13 +1945,31 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                             })}
                           </div>
                           {booking.status === "APPROVED" && <div className="arow-meta">The listing is marked taken. Coordinate next steps directly with the landlord.</div>}
+                          {booking.terminationRequestStatus === "PENDING" && (
+                            <div className="arow-meta" role="status">
+                              Landlord requested early termination: {booking.terminationReason}
+                            </div>
+                          )}
+                          {booking.terminationRequestStatus === "DISPUTED" && (
+                            <div className="arow-meta" role="status">Your dispute is awaiting admin review. The tenancy remains active.</div>
+                          )}
+                          {booking.terminationRequestStatus === "RESOLVED" && booking.terminationResolution === "KEEP_ACTIVE" && (
+                            <div className="arow-meta">Admin reviewed the request; this tenancy remains active.</div>
+                          )}
                           {["CANCELLED", "REJECTED", "COMPLETED"].includes(booking.status) && (
-                            <div className="arow-meta">Journey ended: {bookingStatusLabel(booking.status)}.</div>
+                            <div className="arow-meta">
+                              {booking.status === "COMPLETED"
+                                ? "You’ve completed this tenancy."
+                                : booking.status === "CANCELLED"
+                                  ? "This request was cancelled."
+                                  : "This request wasn’t approved."}
+                            </div>
                           )}
                         </div>
                         <div className="arow-acts">
                           <span className={`sbadge ${bookingStatusTone(booking.status)}`}>{bookingStatusLabel(booking.status)}</span>
                           {renderCompletionControls(booking)}
+                          {renderTerminationControls(booking)}
                           {booking.status === "PENDING" && (
                             <button className="bdel" onClick={()=>handleTenantCancelBooking(booking.id)}>Cancel</button>
                           )}
@@ -1720,6 +2023,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
           savedHomesError={savedHomesError}
           onRetrySavedHomes={retrySavedHomes}
           onClearSavedHomes={clearSavedHomesRequest}
+          onSignIn={() => setAuthModal("tenant")}
         />
       )}
 
@@ -1741,7 +2045,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               </div>
               <div className="lhero-actions">
                 <button type="button" className="bghost" onClick={()=>{setLdTab("listing");document.getElementById("landlord-dashboard-workspace")?.scrollIntoView({behavior:"smooth",block:"start"});}}>Add a listing</button>
-                <button type="button" className="bghost" onClick={()=>document.getElementById("landlord-booking-requests")?.scrollIntoView({behavior:"smooth",block:"start"})}>Review booking requests</button>
+                <button type="button" className="bghost" onClick={()=>document.getElementById("landlord-active-tenancies")?.scrollIntoView({behavior:"smooth",block:"start"})}>Review active tenancies</button>
               </div>
             </div>
             <div className="lkpis">
@@ -1817,6 +2121,40 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             </div>
           </section>
 
+          <div id="landlord-active-tenancies" className="fcard landlord-active-tenancies" style={{marginBottom:"1.5rem"}}>
+            <h3>Active Tenancies</h3>
+            <p className="sub">Manage confirmed tenancies here. Request early termination only when needed; the tenant can agree or ask an admin to review.</p>
+            {activeTenancyLoading && <EmptyState role="status">Loading active tenancies…</EmptyState>}
+            {!activeTenancyLoading && activeTenancyError && (
+              <div className="form-error" role="alert">
+                Unable to load active tenancies: {activeTenancyError}
+                <button type="button" className="bghost" style={{marginLeft:"0.75rem"}} onClick={() => void loadActiveLandlordBookings()}>Retry</button>
+              </div>
+            )}
+            {!activeTenancyLoading && !activeTenancyError && activeLandlordBookings.length === 0 && (
+              <EmptyState>No active confirmed tenancies.</EmptyState>
+            )}
+            {!activeTenancyLoading && !activeTenancyError && activeLandlordBookings.length > 0 && (
+              <div style={{display:"grid",gap:"0.85rem"}}>
+                {activeLandlordBookings.map(booking => (
+                  <div key={booking.id} className="arow landlord-active-tenancy">
+                    <div className="arow-icon" style={{background:"#2D5016"}}>{(booking.tenant?.firstName || "T").slice(0,1).toUpperCase()}</div>
+                    <div className="arow-info">
+                      <div className="arow-title">{booking.tenant?.firstName && booking.tenant?.lastName ? `${booking.tenant.firstName} ${booking.tenant.lastName}` : "Tenant"} · {booking.property?.title || "Property"}</div>
+                      <div className="arow-meta">Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
+                      {booking.terminationRequestStatus === "PENDING" && <div className="arow-meta" role="status">Early termination request sent. Reason: {booking.terminationReason}</div>}
+                      {booking.terminationRequestStatus === "DISPUTED" && <div className="arow-meta" role="status">The tenant disputed this request. An admin must review it; the tenancy remains active.</div>}
+                    </div>
+                    <div className="arow-acts">
+                      {renderCompletionControls(booking)}
+                      {renderTerminationControls(booking)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div id="landlord-booking-requests" className="fcard landlord-booking-requests" style={{marginBottom:"1.5rem"}}>
             <h3>Booking Requests</h3>
             <p className="sub">Manage tenant requests for properties you own.</p>
@@ -1846,6 +2184,12 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                       <div className="arow-title">{booking.tenant?.firstName && booking.tenant?.lastName ? `${booking.tenant.firstName} ${booking.tenant.lastName}` : booking.tenant?.name || "Tenant"} · {booking.property?.title || "Property"}</div>
                       <div className="arow-meta"><Icon name="mapPin" /> {bookingLocation(booking.property?.location) || "Location not available"} · Move-in {booking.moveInDate ? new Date(booking.moveInDate).toLocaleDateString("en-KE") : "N/A"} · {booking.leaseMonths || 0} month{(booking.leaseMonths || 0) === 1 ? "" : "s"}</div>
                       {booking.notes && <div className="arow-meta"><Icon name="briefcase" /> {booking.notes}</div>}
+                      {booking.terminationRequestStatus === "PENDING" && (
+                        <div className="arow-meta" role="status">Early termination request sent. Reason: {booking.terminationReason}</div>
+                      )}
+                      {booking.terminationRequestStatus === "DISPUTED" && (
+                        <div className="arow-meta" role="status">The tenant disputed this request. An admin must review it; the tenancy remains active.</div>
+                      )}
                     </div>
                     <div className="arow-acts">
                       <span className={`sbadge ${bookingStatusTone(booking.status)}`}>{bookingStatusLabel(booking.status)}</span>
@@ -1856,9 +2200,7 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                         </>
                       )}
                       {booking.status === "APPROVED" && (
-                        <>
-                          {renderCompletionControls(booking)}
-                        </>
+                        <span className="arow-meta">Manage this tenancy in Active Tenancies above.</span>
                       )}
                       {booking.status === "COMPLETED" && (
                         <span className="arow-meta">Booking closed. Mark the listing available when it is vacant.</span>
@@ -1920,10 +2262,19 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                     <div className="arow-info">
                       <div className="arow-title">{booking.property?.title || "Property booking"}</div>
                       <div className="arow-meta">Booking {booking.id} · {bookingStatusLabel(booking.status)}</div>
+                      {booking.terminationRequestStatus === "DISPUTED" && (
+                        <div className="arow-meta">Early termination dispute · Reason: {booking.terminationReason}</div>
+                      )}
                       {booking.isTestData && <div className="arow-meta">Explicitly marked as test data</div>}
                     </div>
                     <div className="arow-acts">
-                      {booking.status === "APPROVED" && <button className="bban" onClick={() => requestResolveBooking(booking)}>Resolve booking</button>}
+                      {booking.status === "APPROVED" && !["PENDING", "DISPUTED"].includes(booking.terminationRequestStatus) && <button className="bban" onClick={() => requestResolveBooking(booking)}>Resolve booking</button>}
+                      {booking.status === "APPROVED" && booking.terminationRequestStatus === "DISPUTED" && (
+                        <>
+                          <button className="bdel" disabled={completionLoadingId === booking.id} onClick={() => requestResolveEarlyTermination(booking, "END_TENANCY")}>End tenancy</button>
+                          <button className="bapp" disabled={completionLoadingId === booking.id} onClick={() => requestResolveEarlyTermination(booking, "KEEP_ACTIVE")}>Keep active</button>
+                        </>
+                      )}
                       {booking.isTestData
                         ? <button className="bdel" disabled={booking.status !== "PENDING" && booking.status !== "APPROVED"} onClick={() => requestCloseTestBooking(booking)}>Close test booking</button>
                         : <button className="bapp" disabled={booking.status === "COMPLETED"} onClick={() => requestMarkTestBooking(booking)}>Mark as test data</button>}
@@ -1946,33 +2297,33 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 <h3>Contact & Social Media</h3><p className="sub">Shown on listings so tenants can reach you directly.</p>
                 <div className="divlbl"><span>📞 Phone Numbers</span></div>
                 <div className="frow">
-                  <div className="fg"><label htmlFor="social-phone">Primary Phone</label><div className="inpw"><span className="inpx">🇰🇪</span><input id="social-phone" placeholder="e.g. +254 700 000 000" value={profileForm.phone} onChange={e=>setProfileForm({...profileForm,phone:e.target.value})} /></div></div>
-                  <div className="fg"><label htmlFor="social-whatsapp">WhatsApp <small>(not persisted yet)</small></label><div className="inpw"><span className="inpx">💬</span><input id="social-whatsapp" placeholder="Not available" value={user.data.whatsapp||""} readOnly /></div></div>
+                  <div className="fg"><label htmlFor="social-phone">Primary Phone</label><div className="inpw"><span className="inpx">🇰🇪</span><input id="social-phone" placeholder="e.g. +254 700 000 000" value={profileForm.phone} onChange={e=>setProfileForm({...profileForm,phone:e.target.value})} disabled={profileSaving} /></div></div>
+                  <div className="fg"><label htmlFor="social-whatsapp">WhatsApp</label><div className="inpw"><span className="inpx">💬</span><input id="social-whatsapp" placeholder="e.g. +254 700 000 000" value={profileForm.whatsapp} onChange={e=>setProfileForm({...profileForm,whatsapp:e.target.value})} disabled={profileSaving} /></div></div>
                 </div>
                 <div className="fg"><label htmlFor="social-email">Email <small>(account email)</small></label><div className="inpw"><span className="inpx">✉️</span><input id="social-email" type="email" value={user.data.email||""} readOnly /></div></div>
-                <div className="divlbl"><span>📱 Social Media <small>(not persisted yet)</small></span></div>
+                <div className="divlbl"><span>📱 Social Media</span></div>
                 <div className="frow">
-                  <div className="fg"><label htmlFor="social-instagram">Instagram</label><div className="inpw"><span className="inpx">📸 @</span><input id="social-instagram" placeholder="Not available" value={user.data.ig||""} readOnly /></div></div>
-                  <div className="fg"><label htmlFor="social-facebook">Facebook</label><div className="inpw"><span className="inpx">👍</span><input id="social-facebook" placeholder="Not available" value={user.data.fb||""} readOnly /></div></div>
+                  <div className="fg"><label htmlFor="social-instagram">Instagram</label><div className="inpw"><span className="inpx">📸 @</span><input id="social-instagram" placeholder="username" value={profileForm.ig} onChange={e=>setProfileForm({...profileForm,ig:e.target.value})} disabled={profileSaving} /></div></div>
+                  <div className="fg"><label htmlFor="social-facebook">Facebook</label><div className="inpw"><span className="inpx">👍</span><input id="social-facebook" placeholder="username" value={profileForm.fb} onChange={e=>setProfileForm({...profileForm,fb:e.target.value})} disabled={profileSaving} /></div></div>
                 </div>
                 <div className="frow">
-                  <div className="fg"><label htmlFor="social-tiktok">TikTok</label><div className="inpw"><span className="inpx">🎵 @</span><input id="social-tiktok" placeholder="Not available" value={user.data.tt||""} readOnly /></div></div>
-                  <div className="fg"><label htmlFor="social-twitter">X / Twitter</label><div className="inpw"><span className="inpx">𝕏 @</span><input id="social-twitter" placeholder="Not available" value={user.data.tw||""} readOnly /></div></div>
+                  <div className="fg"><label htmlFor="social-tiktok">TikTok</label><div className="inpw"><span className="inpx">🎵 @</span><input id="social-tiktok" placeholder="username" value={profileForm.tt} onChange={e=>setProfileForm({...profileForm,tt:e.target.value})} disabled={profileSaving} /></div></div>
+                  <div className="fg"><label htmlFor="social-twitter">X / Twitter</label><div className="inpw"><span className="inpx">𝕏 @</span><input id="social-twitter" placeholder="username" value={profileForm.tw} onChange={e=>setProfileForm({...profileForm,tw:e.target.value})} disabled={profileSaving} /></div></div>
                 </div>
-                {(user.data.phone||user.data.ig) && <div className="pprev"><h4>Live Preview</h4>
+                {(profileForm.phone||profileForm.whatsapp||profileForm.ig||profileForm.fb||profileForm.tt||profileForm.tw||user.data.email) && <div className="pprev"><h4>Live Preview</h4>
                   <div className="cchips">
-                    {user.data.phone&&<div className="cchip">📞 {user.data.phone}</div>}
-                    {user.data.whatsapp&&<div className="cchip">💬 WhatsApp</div>}
+                    {profileForm.phone&&<div className="cchip">📞 {profileForm.phone}</div>}
+                    {profileForm.whatsapp&&<div className="cchip">💬 WhatsApp</div>}
                     {user.data.email&&<div className="cchip">✉️ {user.data.email}</div>}
                   </div>
                   <div className="schips">
-                    {user.data.ig&&<span className="sc sc-ig">📸 @{user.data.ig}</span>}
-                    {user.data.fb&&<span className="sc sc-fb">👍 {user.data.fb}</span>}
-                    {user.data.tt&&<span className="sc sc-tt">🎵 @{user.data.tt}</span>}
-                    {user.data.tw&&<span className="sc sc-tw">𝕏 @{user.data.tw}</span>}
+                    {profileForm.ig&&<span className="sc sc-ig">📸 @{profileForm.ig.replace(/^@/, "")}</span>}
+                    {profileForm.fb&&<span className="sc sc-fb">👍 {profileForm.fb.replace(/^@/, "")}</span>}
+                    {profileForm.tt&&<span className="sc sc-tt">🎵 @{profileForm.tt.replace(/^@/, "")}</span>}
+                    {profileForm.tw&&<span className="sc sc-tw">𝕏 @{profileForm.tw.replace(/^@/, "")}</span>}
                   </div>
                 </div>}
-                <button type="submit" className="bp">Save Phone →</button>
+                <button type="submit" className="bp" disabled={profileSaving} aria-busy={profileSaving}>{profileSaving ? "Saving contact details…" : "Save Contact Details →"}</button>
               </form>}
 
               {ldTab==="media" && <div className="fcard">
@@ -2058,13 +2409,19 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
               {ldTab==="mylistings" && <div className="fcard">
                 <h3>My Listings</h3><p className="sub">{myProps.length} listing{myProps.length!==1?"s":""}.</p>
                 {myProps.length===0 && <p style={{color:"#bbb",textAlign:"center",padding:"2rem"}}>No listings yet. Go to Add Listing.</p>}
-                {myProps.map(p=>(
+                {myProps.map(p=>{
+                  const externalTenancy = externalTenancyFor(p);
+                  const externalTermEnd = externalLeaseTermEndsAt(externalTenancy);
+                  const canConfirmExternalVacancy = Boolean(externalTermEnd && currentTime >= externalTermEnd.getTime());
+                  return (
                   <div key={p.id} className="lrow">
                     <div className="lclr" style={{background:p.color}}>{p.initials}</div>
                     <div className="linfo">
                       <div className="ltitle">{p.title}</div>
                       <div className="lmeta">📍 {p.location} · {p.type} · {p.media?.length||0} media{p.approved===false?" · ⏳ Pending":""}</div>
                       {p.approved && <div className="lmeta">Availability last confirmed: {formatAvailabilityConfirmation(p.availabilityConfirmedAt)}</div>}
+                      {externalTenancy && <div className="lmeta">External tenant: {externalTenancy.tenantName} · Move-in {externalDateLabel(externalTenancy.moveInDate)} · {externalTenancy.leaseMonths} month{externalTenancy.leaseMonths === 1 ? "" : "s"} · lease through {externalLeaseEndLabel(externalTenancy)}</div>}
+                      {p.status === "taken" && !externalTenancy && <div className="lmeta">Manage HouseHunt tenancies through Booking Requests. If there is no active booking, record the existing external tenancy here.</div>}
                     </div>
                     <div className="lacts">
                       <div className="lstatus-group">
@@ -2078,16 +2435,35 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                           <button type="button" className="bghost" onClick={() => void confirmAvailability(p.id)} disabled={availabilityConfirmingId === p.id} aria-busy={availabilityConfirmingId === p.id}>
                             {availabilityConfirmingId === p.id ? "Confirming…" : "Confirm available"}
                           </button>
-                          <button type="button" className="bghost" onClick={() => markTaken(p.id)}>Mark taken</button>
+                          <button type="button" className="bghost" onClick={() => markTaken(p.id)} disabled={propertyStatusUpdatingId === p.id}>Record external tenancy</button>
                         </>
                       )}
-                      {p.approved && p.status === "taken" && <button type="button" className="bghost" onClick={() => markTaken(p.id)}>Mark available</button>}
+                      {p.approved && p.status === "taken" && externalTenancy && (
+                        <button
+                          type="button"
+                          className="bghost"
+                          onClick={() => markAvailable(p.id)}
+                          disabled={!canConfirmExternalVacancy || propertyStatusUpdatingId === p.id}
+                          title={!canConfirmExternalVacancy ? `Available after ${externalLeaseEndLabel(externalTenancy)}` : undefined}
+                        >
+                          {propertyStatusUpdatingId === p.id
+                            ? "Updating…"
+                            : canConfirmExternalVacancy
+                              ? "Confirm vacant & mark available"
+                              : `Available after ${externalLeaseEndLabel(externalTenancy)}`}
+                        </button>
+                      )}
+                      {p.approved && p.status === "taken" && !externalTenancy && (
+                        <button type="button" className="bghost" onClick={() => markTaken(p.id)} disabled={propertyStatusUpdatingId === p.id}>
+                          Record external tenancy
+                        </button>
+                      )}
                       {p.approved && p.status === "available" && !p.boosted && <button type="button" className="bboost" onClick={() => void openPropertyPayment({ type: "boost", propId: p.id })}>Boost listing · KSh {settings.boostFee}</button>}
                       <button className="bghost" onClick={()=>beginEditProperty(p)}>Edit</button>
                       <button className="bdel" aria-label={`Delete listing: ${p.title}`} onClick={()=>deleteProp(p.id)}>🗑</button>
                     </div>
                   </div>
-                ))}
+                );})}
               </div>}
             </div>
           </div>
@@ -2258,12 +2634,22 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                   {taken.map(p=>(
                     <div key={p.id} className="arow" style={{borderLeft:"3px solid #dc2626"}}>
                       <div className="arow-icon" style={{background:p.color}}>{p.initials}</div>
-                      <div className="arow-info"><div className="arow-title">{p.title}</div><div className="arow-meta">📍 {p.location} · Marked taken by landlord</div></div>
+                      <div className="arow-info">
+                        <div className="arow-title">{p.title}</div>
+                        <div className="arow-meta">📍 {p.location} · Occupied; availability follows its active booking or external tenancy.</div>
+                        {externalTenancyFor(p) && <div className="arow-meta">External tenant: {externalTenancyFor(p).tenantName} · Lease through {externalLeaseEndLabel(externalTenancyFor(p))}</div>}
+                      </div>
                       <div className="arow-acts">
                         <span className="sbadge sb-tk">⊘ Taken</span>
-                        <button className="bapp" onClick={()=>{adminVerify(p.id);}}>✅ Verify & Finalise</button>
-                        <button className="bghost" style={{fontSize:"0.72rem",padding:"5px 11px",color:"#C4991A",borderColor:"rgba(196,153,26,0.3)"}} onClick={()=>updatePropertyStatusApi(p.id, "AVAILABLE").then(()=>msg("↩ Restored to Available.","info")).catch(error=>msg(error.response?.data?.message || error.message,"err"))}>↩ Reject</button>
-                        <button className="bdel" aria-label={`Delete taken listing: ${p.title}`} onClick={()=>deleteProp(p.id)}>🗑</button>
+                        {!externalTenancyFor(p) && (
+                          <button
+                            className="bghost"
+                            onClick={() => resolveLegacyOccupancy(p.id)}
+                            disabled={propertyStatusUpdatingId === p.id}
+                          >
+                            Resolve legacy status
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -2450,9 +2836,9 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             {n:"02",t:"Unlock Contacts",d:`Pay KSh ${settings.unlockFee} through a server-initiated M-PESA STK prompt to reveal the landlord's contact details and full property location. Access is granted after Daraja confirms payment.`},
             {n:"03",t:"Free Landlord Listing",d:"Landlords sign up and list properties for free with photos, videos, contact info, and social media links."},
             {n:"04",t:"Boost Your Listing",d:`Pay KSh ${settings.boostFee} through M-PESA to feature an approved available listing for 30 days. The boost is applied after Daraja confirms payment.`},
-            {n:"05",t:"Booking & Availability",d:"A booking request records interest but does not reserve a home. The landlord confirms only after arrangements are agreed; this marks the listing taken. Landlords may also update availability for agreements made outside HouseHunt."},
+            {n:"05",t:"Booking & Availability",d:"A booking request records interest but does not reserve a home. The landlord confirms only after arrangements are agreed; this marks the listing taken. For an agreement made outside HouseHunt, landlords record the tenant and lease dates when marking it taken, including existing untracked tenancies."},
             {n:"06",t:"Platform Payments Only",d:"HouseHunt only processes payments for contact unlocks and optional listing boosts. Tenants and landlords coordinate all other arrangements directly."},
-            {n:"07",t:"Mark Available Again",d:"When the home is vacant, both parties can confirm the booking is complete and the landlord can mark the listing available. Admins can resolve disputed availability after review."},
+            {n:"07",t:"Mark Available Again",d:"Both parties confirm completion for a HouseHunt tenancy. For an external tenancy, the landlord can confirm vacancy only after the recorded lease term ends. Admins can resolve disputed HouseHunt tenancies after review."},
             {n:"08",t:"Save & Share Homes",d:"Use the heart on a listing to keep it in Saved Homes on this browser, or share its listing link with friends and family."},
           ].map(s=>(
             <div key={s.n} className="gcard">
@@ -2502,7 +2888,11 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
                 canManage={canManage}
                 liveProp={liveProp}
                 markTaken={markTaken}
-                adminVerify={adminVerify}
+                markAvailable={markAvailable}
+                canConfirmExternalVacancy={Boolean(
+                  externalLeaseTermEndsAt(externalTenancyFor(liveProp)) &&
+                  currentTime >= externalLeaseTermEndsAt(externalTenancyFor(liveProp)).getTime()
+                )}
                 flagProp={flagProp}
                 approveProp={approveProp}
                 setSelProp={setSelProp}
@@ -2781,9 +3171,79 @@ export default function AppShell({ initialTab = "home", authMode = null, propert
             <div style={{fontSize:"2.3rem",marginBottom:"0.7rem"}}><Icon name={confModal.type==="ban" ? "shield" : confModal.type==="completion" ? "checkCircle" : "trash"} /></div>
             <h2 id="confirmation-title" style={{fontFamily:"Cormorant Garamond,serif",fontSize:"1.4rem",fontWeight:700,marginBottom:"0.5rem"}}>{confModal.title}</h2>
             <p style={{fontSize:"0.81rem",color:"#777",lineHeight:1.6}}>{confModal.msg2}</p>
+            {confModal.terminationAction === "REQUEST" && (
+              <div className="fg" style={{textAlign:"left",marginTop:"1rem"}}>
+                <label htmlFor="early-termination-reason">Reason for requesting early termination</label>
+                <textarea
+                  id="early-termination-reason"
+                  rows={4}
+                  maxLength={1000}
+                  value={terminationReason}
+                  onChange={event => setTerminationReason(event.target.value)}
+                  placeholder="Explain why you are requesting to end the tenancy early."
+                />
+                <small>{terminationReason.trim().length}/1000 characters · at least 10 required</small>
+              </div>
+            )}
+            {confModal.type === "external-tenancy" && (
+              <div className="fg" style={{textAlign:"left",marginTop:"1rem"}}>
+                <label htmlFor="external-tenant-name">Tenant name</label>
+                <input
+                  id="external-tenant-name"
+                  type="text"
+                  maxLength={120}
+                  value={externalTenancyForm.tenantName}
+                  onChange={event => {
+                    const next = { ...externalTenancyForm, tenantName: event.target.value };
+                    externalTenancyFormRef.current = next;
+                    setExternalTenancyForm(next);
+                    setExternalTenancyError("");
+                  }}
+                  disabled={propertyStatusUpdatingId === confModal.propertyId}
+                />
+                <label htmlFor="external-tenancy-move-in">Move-in date</label>
+                <input
+                  id="external-tenancy-move-in"
+                  type="date"
+                  max={todayStr()}
+                  value={externalTenancyForm.moveInDate}
+                  onChange={event => {
+                    const next = { ...externalTenancyForm, moveInDate: event.target.value };
+                    externalTenancyFormRef.current = next;
+                    setExternalTenancyForm(next);
+                    setExternalTenancyError("");
+                  }}
+                  disabled={propertyStatusUpdatingId === confModal.propertyId}
+                />
+                <label htmlFor="external-tenancy-months">Lease duration (months)</label>
+                <input
+                  id="external-tenancy-months"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={externalTenancyForm.leaseMonths}
+                  onChange={event => {
+                    const next = { ...externalTenancyForm, leaseMonths: event.target.value };
+                    externalTenancyFormRef.current = next;
+                    setExternalTenancyForm(next);
+                    setExternalTenancyError("");
+                  }}
+                  disabled={propertyStatusUpdatingId === confModal.propertyId}
+                />
+                {externalTenancyError && <p className="form-error" role="alert">{externalTenancyError}</p>}
+              </div>
+            )}
             <div className="confbtns">
-              <button className="confcancel" onClick={()=>setConfModal(null)}>Cancel</button>
-              <button className={confModal.type==="ban"||confModal.type==="completion"?"confban":"confdel"} onClick={confModal.onConfirm}>{confModal.confirmLabel || (confModal.type==="ban"?"Confirm":confModal.type==="close-test"?"Close booking":confModal.type==="test-data"?"Mark as test":"Delete")}</button>
+              <button className="confcancel" onClick={()=>setConfModal(null)} disabled={propertyStatusUpdatingId === confModal.propertyId}>Cancel</button>
+              <button
+                className={confModal.type==="ban"||confModal.type==="completion"?"confban":"confdel"}
+                disabled={confModal.terminationAction === "REQUEST" && terminationReason.trim().length < 10}
+                onClick={confModal.onConfirm}
+              >
+                {propertyStatusUpdatingId === confModal.propertyId
+                  ? "Updating…"
+                  : confModal.confirmLabel || (confModal.type==="ban"?"Confirm":confModal.type==="close-test"?"Close booking":confModal.type==="test-data"?"Mark as test":"Delete")}
+              </button>
             </div>
         </Modal>
       )}

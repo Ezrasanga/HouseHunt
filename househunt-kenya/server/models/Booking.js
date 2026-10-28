@@ -1,5 +1,23 @@
 import mongoose from 'mongoose';
 
+const terminationRequestSchema = new mongoose.Schema(
+  {
+    reason: { type: String, trim: true, required: true, maxlength: 1000 },
+    requestedAt: { type: Date, required: true },
+    status: {
+      type: String,
+      enum: ['PENDING', 'DISPUTED', 'WITHDRAWN', 'AGREED', 'RESOLVED'],
+      required: true,
+    },
+    respondedAt: { type: Date, default: null },
+    resolvedAt: { type: Date, default: null },
+    resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    resolution: { type: String, enum: ['MUTUAL_AGREEMENT', 'END_TENANCY', 'KEEP_ACTIVE', null], default: null },
+    resolutionNote: { type: String, trim: true, default: '', maxlength: 1000 },
+  },
+  { _id: false }
+);
+
 const bookingSchema = new mongoose.Schema(
   {
     tenant: {
@@ -47,6 +65,50 @@ const bookingSchema = new mongoose.Schema(
     completedAt: {
       type: Date,
       default: null,
+    },
+    terminationRequestStatus: {
+      type: String,
+      enum: ['NONE', 'PENDING', 'DISPUTED', 'WITHDRAWN', 'AGREED', 'RESOLVED'],
+      default: 'NONE',
+      index: true,
+    },
+    terminationReason: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 1000,
+    },
+    terminationRequestedAt: {
+      type: Date,
+      default: null,
+    },
+    terminationRespondedAt: {
+      type: Date,
+      default: null,
+    },
+    terminationResolvedAt: {
+      type: Date,
+      default: null,
+    },
+    terminationResolvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    terminationResolution: {
+      type: String,
+      enum: ['MUTUAL_AGREEMENT', 'END_TENANCY', 'KEEP_ACTIVE', null],
+      default: null,
+    },
+    terminationResolutionNote: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 1000,
+    },
+    terminationHistory: {
+      type: [terminationRequestSchema],
+      default: [],
     },
     isTestData: {
       type: Boolean,

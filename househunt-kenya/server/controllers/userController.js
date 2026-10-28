@@ -1,5 +1,7 @@
 import * as userService from '../services/userService.js';
 import { recordAuditEvent } from '../services/auditLogService.js';
+import { setAuthCookie } from '../utils/authCookie.js';
+import { generateToken } from '../utils/generateToken.js';
 
 function sendResponse(res, statusCode, success, message, data = null, errors = []) {
   return res.status(statusCode).json({
@@ -84,6 +86,8 @@ export async function updateProfile(req, res) {
 export async function changePassword(req, res) {
   try {
     const result = await userService.changePassword(req.user?.id, req.body);
+    // The password change increments tokenVersion, so issue a replacement cookie.
+    setAuthCookie(res, generateToken(result));
     return sendResponse(res, 200, true, 'Password changed successfully', { user: result }, []);
   } catch (err) {
     return handleError(res, err);

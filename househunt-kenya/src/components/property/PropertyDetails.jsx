@@ -25,7 +25,7 @@ export default function PropertyDetails({
   const KES = n => `KSh ${Number(n).toLocaleString()}`;
   const statusKey = liveProp.status === "available" ? "av" : "tk";
   const isAvailable = liveProp.status === "available";
-  const hasContact = liveProp.contact && (liveProp.contact.phone || liveProp.contact.whatsapp || liveProp.contact.email);
+  const hasContact = liveProp.contact && Object.values(liveProp.contact).some(Boolean);
   const submitAvailabilityReport = async event => {
     event.preventDefault();
     setReportSubmitting(true);

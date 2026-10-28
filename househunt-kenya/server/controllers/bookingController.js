@@ -99,6 +99,58 @@ export async function updateCompletion(req, res) {
   }
 }
 
+export async function updateEarlyTermination(req, res) {
+  try {
+    const result = await bookingService.updateEarlyTermination(
+      req.params.id,
+      req.user,
+      req.body?.action,
+      req.body?.reason
+    );
+    const action = String(req.body?.action || '').toUpperCase();
+    await recordAuditEvent({
+      actor: req.user,
+      action: `Early termination ${action.toLowerCase()}`,
+      description: action === 'REQUEST'
+        ? `Landlord requested early termination: ${String(req.body?.reason || '').trim().slice(0, 120)}`
+        : `Early termination response recorded: ${action}`,
+      resourceType: 'booking',
+      resourceId: req.params.id,
+    });
+    return sendResponse(
+      res,
+      200,
+      true,
+      result.completed ? 'Tenancy ended by mutual agreement' : 'Early termination request updated',
+      result,
+      []
+    );
+  } catch (err) {
+    return handleError(res, err);
+  }
+}
+
+export async function resolveEarlyTermination(req, res) {
+  try {
+    const result = await bookingService.resolveEarlyTermination(
+      req.params.id,
+      req.user,
+      req.body?.resolution,
+      req.body?.note
+    );
+    await recordAuditEvent({
+      actor: req.user,
+      action: 'Disputed early termination resolved',
+      description: `Admin resolved the disputed termination as ${String(req.body?.resolution || '').toUpperCase()}`,
+      resourceType: 'booking',
+      resourceId: req.params.id,
+    });
+    return sendResponse(res, 200, true, 'Disputed early termination resolved', result, []);
+  } catch (err) {
+    return handleError(res, err);
+  }
+}
+
 export async function resolveAvailability(req, res) {
   try {
     const result = await bookingService.resolveBookingAvailability(req.params.id, req.user);

@@ -98,10 +98,23 @@ export async function approve(req, res) {
 export async function updateStatus(req, res) {
   try {
     const result = await propertyService.updatePropertyStatus(req.params.id, req.user, req.body);
+    const newStatus = String(req.body?.status || '').toUpperCase();
     await recordAuditEvent({
       actor: req.user,
-      action: 'Property status changed',
-      description: `Changed property status to ${String(req.body?.status || '').toUpperCase()}`,
+      action: newStatus === 'OCCUPIED'
+        ? 'External tenancy recorded'
+        : newStatus === 'AVAILABLE' && req.body?.confirmVacant === true && req.user?.role === 'LANDLORD'
+          ? 'External tenancy ended'
+          : newStatus === 'AVAILABLE' && req.body?.confirmVacant === true
+            ? 'Legacy property vacancy confirmed'
+          : 'Property status changed',
+      description: newStatus === 'OCCUPIED'
+        ? 'Recorded an external tenancy for a property listing'
+        : newStatus === 'AVAILABLE' && req.body?.confirmVacant === true && req.user?.role === 'LANDLORD'
+          ? 'Confirmed an external tenancy ended and the property is vacant'
+          : newStatus === 'AVAILABLE' && req.body?.confirmVacant === true
+            ? 'Confirmed a legacy listing is vacant'
+          : `Changed property status to ${newStatus}`,
       resourceType: 'property',
       resourceId: req.params.id,
     });

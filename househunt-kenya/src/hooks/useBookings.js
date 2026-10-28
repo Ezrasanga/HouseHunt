@@ -8,6 +8,7 @@ import {
   getTenantBookings,
   rejectBooking as rejectBookingRequest,
   updateBookingCompletion as updateBookingCompletionRequest,
+  updateEarlyTermination as updateEarlyTerminationRequest,
 } from "../services/bookingService";
 
 function bookingErrorMessage(error) {
@@ -19,11 +20,14 @@ export default function useBookings() {
 
   const [tenantBookings, setTenantBookings] = useState([]);
   const [landlordBookings, setLandlordBookings] = useState([]);
+  const [activeLandlordBookings, setActiveLandlordBookings] = useState([]);
   const [landlordBookingsPagination, setLandlordBookingsPagination] = useState(null);
   const [tenantLoading, setTenantLoading] = useState(false);
   const [landlordLoading, setLandlordLoading] = useState(false);
+  const [activeTenancyLoading, setActiveTenancyLoading] = useState(false);
   const [tenantError, setTenantError] = useState("");
   const [landlordError, setLandlordError] = useState("");
+  const [activeTenancyError, setActiveTenancyError] = useState("");
 
   const loadTenantBookings = useCallback(async (params = {}) => {
     if (!user || user.role !== "tenant") {
@@ -70,6 +74,27 @@ export default function useBookings() {
     }
   }, [user]);
 
+  const loadActiveLandlordBookings = useCallback(async () => {
+    if (!user || user.role !== "landlord") {
+      setActiveLandlordBookings([]);
+      return [];
+    }
+
+    setActiveTenancyLoading(true);
+    setActiveTenancyError("");
+    try {
+      const result = await getLandlordBookings({ status: "APPROVED", limit: 100 });
+      setActiveLandlordBookings(result.bookings || []);
+      return result.bookings || [];
+    } catch (error) {
+      const message = bookingErrorMessage(error);
+      setActiveTenancyError(message);
+      throw error;
+    } finally {
+      setActiveTenancyLoading(false);
+    }
+  }, [user]);
+
   useEffect(() => {
     if (!user) return undefined;
 
@@ -81,11 +106,12 @@ export default function useBookings() {
 
       if (user.role === "landlord") {
         void loadLandlordBookings({ limit: 10 });
+        void loadActiveLandlordBookings();
       }
     }, 0);
 
     return () => clearTimeout(timer);
-  }, [loadLandlordBookings, loadTenantBookings, user]);
+  }, [loadActiveLandlordBookings, loadLandlordBookings, loadTenantBookings, user]);
 
   const createBooking = useCallback(async (payload) => {
     const booking = await createBookingRequest(payload);
@@ -103,9 +129,9 @@ export default function useBookings() {
   const approveBooking = useCallback(async (id) => {
     const booking = await approveBookingRequest(id);
     setLandlordBookings(current => current.map(item => item.id === id ? booking : item));
-    await loadLandlordBookings({ limit: 10 });
+    await Promise.all([loadLandlordBookings({ limit: 10 }), loadActiveLandlordBookings()]);
     return booking;
-  }, [loadLandlordBookings]);
+  }, [loadActiveLandlordBookings, loadLandlordBookings]);
 
   const rejectBooking = useCallback(async (id) => {
     const booking = await rejectBookingRequest(id);
@@ -119,24 +145,42 @@ export default function useBookings() {
     setTenantBookings(current => current.map(item => item.id === id ? booking : item));
     setLandlordBookings(current => current.map(item => item.id === id ? booking : item));
     if (user?.role === "tenant") await loadTenantBookings({ limit: 10 });
-    if (user?.role === "landlord") await loadLandlordBookings({ limit: 10 });
+    if (user?.role === "landlord") {
+      await Promise.all([loadLandlordBookings({ limit: 10 }), loadActiveLandlordBookings()]);
+    }
     return booking;
-  }, [loadLandlordBookings, loadTenantBookings, user]);
+  }, [loadActiveLandlordBookings, loadLandlordBookings, loadTenantBookings, user]);
+
+  const updateEarlyTermination = useCallback(async (id, action, reason = "") => {
+    const booking = await updateEarlyTerminationRequest(id, action, reason);
+    setTenantBookings(current => current.map(item => item.id === id ? booking : item));
+    setLandlordBookings(current => current.map(item => item.id === id ? booking : item));
+    if (user?.role === "tenant") await loadTenantBookings({ limit: 10 });
+    if (user?.role === "landlord") {
+      await Promise.all([loadLandlordBookings({ limit: 10 }), loadActiveLandlordBookings()]);
+    }
+    return booking;
+  }, [loadActiveLandlordBookings, loadLandlordBookings, loadTenantBookings, user]);
 
   return {
     tenantBookings,
     landlordBookings,
+    activeLandlordBookings,
     landlordBookingsPagination,
+    activeTenancyLoading,
     tenantLoading,
     landlordLoading,
     tenantError,
     landlordError,
+    activeTenancyError,
     loadTenantBookings,
     loadLandlordBookings,
+    loadActiveLandlordBookings,
     createBooking,
     cancelBooking,
     approveBooking,
     rejectBooking,
     updateBookingCompletion,
+    updateEarlyTermination,
   };
 }

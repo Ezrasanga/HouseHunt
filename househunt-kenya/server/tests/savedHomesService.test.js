@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import User from '../models/User.js';
+import userRouter from '../routes/users.js';
 import * as userService from '../services/userService.js';
 
 const userId = '507f1f77bcf86cd799439011';
@@ -37,6 +38,16 @@ test('saved homes are read and changed using atomic add and remove operations', 
   } finally {
     User.findById = originalFindById;
     User.findByIdAndUpdate = originalFindByIdAndUpdate;
+  }
+});
+
+test('saved-home routes require an account but are not restricted to one account role', () => {
+  const routes = userRouter.stack.filter(layer => layer.route?.path?.includes('saved-homes'));
+
+  assert.equal(routes.length, 3);
+  for (const layer of routes) {
+    assert.equal(layer.route.stack[0].name, 'authenticate');
+    assert.equal(layer.route.stack.length, 2);
   }
 });
 

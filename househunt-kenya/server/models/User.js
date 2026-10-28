@@ -26,6 +26,35 @@ const userSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    whatsapp: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    ig: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 64,
+    },
+    fb: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 64,
+    },
+    tt: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 64,
+    },
+    tw: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 64,
+    },
     password: {
       type: String,
       required: [true, 'Password is required'],

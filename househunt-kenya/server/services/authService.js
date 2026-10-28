@@ -154,6 +154,21 @@ export async function loginUser(payload) {
   };
 }
 
+export async function logoutUser(userId) {
+  if (!userId) {
+    const error = new Error('User ID is required');
+    error.status = 400;
+    throw error;
+  }
+
+  const result = await User.updateOne({ _id: userId }, { $inc: { tokenVersion: 1 } });
+  if (result.matchedCount === 0) {
+    const error = new Error('User not found');
+    error.status = 404;
+    throw error;
+  }
+}
+
 export async function getProfile(userId) {
   const user = await User.findById(userId);
   if (!user) {

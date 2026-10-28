@@ -13,7 +13,7 @@ function isValidRole(value) {
 export function validateProfileUpdateInput(payload) {
   const errors = [];
   const data = payload || {};
-  const allowedFields = ['firstName', 'lastName', 'phone', 'profileImage'];
+  const allowedFields = ['firstName', 'lastName', 'phone', 'whatsapp', 'ig', 'fb', 'tt', 'tw', 'profileImage'];
   const updates = {};
 
   if (!Object.keys(data).length) {
@@ -39,7 +39,32 @@ export function validateProfileUpdateInput(payload) {
 
     if (field === 'phone') {
       const value = typeof data[field] === 'string' ? data[field].trim() : '';
-      updates.phone = value;
+      if (value.length > 30 || (value && !/^[+\d().\-\s]+$/.test(value))) {
+        errors.push({ field, message: 'Enter a valid phone number of up to 30 characters' });
+      } else {
+        updates.phone = value;
+      }
+      continue;
+    }
+
+    if (field === 'whatsapp') {
+      const value = typeof data[field] === 'string' ? data[field].trim() : '';
+      const digits = value.replace(/[+\s().-]/g, '');
+      if (value && !/^\d{7,15}$/.test(digits)) {
+        errors.push({ field, message: 'Enter a WhatsApp number with 7 to 15 digits' });
+      } else {
+        updates.whatsapp = digits;
+      }
+      continue;
+    }
+
+    if (['ig', 'fb', 'tt', 'tw'].includes(field)) {
+      const value = typeof data[field] === 'string' ? data[field].trim().replace(/^@/, '') : '';
+      if (value.length > 64 || (value && !/^[\w.-]+$/.test(value))) {
+        errors.push({ field, message: 'Enter a social media username using letters, numbers, dots, underscores, or hyphens' });
+      } else {
+        updates[field] = value;
+      }
       continue;
     }
 

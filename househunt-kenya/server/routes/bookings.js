@@ -13,6 +13,8 @@ router.patch('/:id/test-data', requireAuth, authorize('ADMIN'), bookingControlle
 router.patch('/:id/close-test', requireAuth, authorize('ADMIN'), bookingController.closeTest);
 router.patch('/:id/cancel', requireAuth, authorize('TENANT'), bookingController.cancel);
 router.patch('/:id/completion', requireAuth, bookingController.updateCompletion);
+router.patch('/:id/termination', requireAuth, bookingController.updateEarlyTermination);
+router.patch('/:id/termination/admin-resolve', requireAuth, authorize('ADMIN'), bookingController.resolveEarlyTermination);
 router.patch('/:id/admin-resolve', requireAuth, authorize('ADMIN'), bookingController.resolveAvailability);
 router.patch('/:id/approve', requireAuth, authorize('LANDLORD'), bookingController.approve);
 router.patch('/:id/reject', requireAuth, authorize('LANDLORD'), bookingController.reject);

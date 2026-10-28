@@ -40,6 +40,16 @@ const amenitySchema = new mongoose.Schema(
   { _id: false }
 );
 
+const externalTenancySchema = new mongoose.Schema({
+  tenantName: { type: String, trim: true, required: true, maxlength: 120 },
+  moveInDate: { type: Date, required: true },
+  leaseMonths: { type: Number, required: true, min: 1 },
+  recordedAt: { type: Date, required: true },
+  recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  endedAt: { type: Date, default: null },
+  endedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+});
+
 const propertySchema = new mongoose.Schema(
   {
     title: {
@@ -120,6 +130,10 @@ const propertySchema = new mongoose.Schema(
     availabilityConfirmedAt: {
       type: Date,
       default: null,
+    },
+    externalTenancies: {
+      type: [externalTenancySchema],
+      default: [],
     },
     qualityReviewDismissedAt: {
       type: Date,

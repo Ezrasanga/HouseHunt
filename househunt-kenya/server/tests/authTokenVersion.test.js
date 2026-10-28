@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 
 import User from '../models/User.js';
 import { authenticate } from '../middleware/authenticate.js';
+import { AUTH_COOKIE_NAME } from '../utils/authCookie.js';
 
 const originalFindById = User.findById;
 const originalJwtSecret = process.env.JWT_SECRET;
@@ -22,7 +23,11 @@ test('password reset invalidates existing JWTs by token version', async () => {
   let nextCalled = false;
   try {
     await authenticate(
-      { headers: { authorization: `Bearer ${token}` } },
+      {
+        method: 'GET',
+        headers: {},
+        cookies: { [AUTH_COOKIE_NAME]: token },
+      },
       {
         status(code) {
           statusCode = code;

@@ -1,17 +1,26 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
+import { AUTH_COOKIE_NAME } from '../utils/authCookie.js';
 
 export async function authenticate(req, res, next) {
   try {
-    const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+    const token = req.cookies?.[AUTH_COOKIE_NAME];
 
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: 'Authentication token required',
+        message: 'Authentication session required',
         data: null,
-        errors: [{ field: 'authorization', message: 'Bearer token is required' }],
+        errors: [{ field: 'session', message: 'A valid session cookie is required' }],
+      });
+    }
+
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers['x-househunt-request'] !== '1') {
+      return res.status(403).json({
+        success: false,
+        message: 'A valid same-site request header is required',
+        data: null,
+        errors: [{ field: 'x-househunt-request', message: 'Cookie-authenticated state changes require the HouseHunt request header' }],
       });
     }
 

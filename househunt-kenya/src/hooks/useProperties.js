@@ -103,7 +103,7 @@ export default function useProperties({ limit = 12, query = {} } = {}) {
 		updateProperty: async (id, payload) => replaceProperty(await updateProperty(id, payload)),
 		approveProperty: async (id, isApproved) => replaceProperty(await approveProperty(id, isApproved)),
 		confirmPropertyAvailability: async id => replaceProperty(await confirmPropertyAvailability(id)),
-		updatePropertyStatus: async (id, status) => replaceProperty(await updatePropertyStatus(id, status)),
+		updatePropertyStatus: async (id, status, details) => replaceProperty(await updatePropertyStatus(id, status, details)),
 		featureProperty: async (id, featured) => replaceProperty(await featureProperty(id, featured)),
 		normalizeProperty,
 	};

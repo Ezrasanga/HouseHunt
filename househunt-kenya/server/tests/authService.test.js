@@ -4,7 +4,11 @@ import assert from 'node:assert/strict';
 
 import User from '../models/User.js';
 import { loginUser } from '../services/authService.js';
-import { validateLoginInput, validateRegisterInput } from '../utils/authValidator.js';
+import {
+  validateLoginInput,
+  validateProfileUpdateInput,
+  validateRegisterInput,
+} from '../utils/authValidator.js';
 
 const originalFindOne = User.findOne;
 
@@ -35,6 +39,37 @@ test('public registration continues to reject the ADMIN role', () => {
 
   assert.equal(result.success, false);
   assert.equal(result.errors[0].field, 'role');
+});
+
+test('profile updates persist and normalize landlord contact details', () => {
+  const result = validateProfileUpdateInput({
+    phone: '+254 700 123 456',
+    whatsapp: '+254 (711) 234-567',
+    ig: '@house.hunt',
+    fb: 'househunt.kenya',
+    tt: '@house_hunt',
+    tw: '@house-hunt',
+  });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(result.data, {
+    phone: '+254 700 123 456',
+    whatsapp: '254711234567',
+    ig: 'house.hunt',
+    fb: 'househunt.kenya',
+    tt: 'house_hunt',
+    tw: 'house-hunt',
+  });
+});
+
+test('profile update rejects malformed WhatsApp numbers and social usernames', () => {
+  const result = validateProfileUpdateInput({
+    whatsapp: 'call-me',
+    ig: 'https://instagram.com/account',
+  });
+
+  assert.equal(result.success, false);
+  assert.deepEqual(result.errors.map(error => error.field), ['whatsapp', 'ig']);
 });
 
 test('login rejects credentials when the account does not match the requested role', async () => {
